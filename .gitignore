@@ -2,3 +2,6 @@ __pycache__/
 mini_bdx_runtime.egg-info/
 build
 dist
+.venv/
+duck_config.json
+imu_calib_data.pkl

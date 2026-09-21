@@ -1,5 +1,11 @@
 # Open Duck Mini Runtime
 
+## This robot's wiring
+
+This branch adapts the foot inputs, BNO055 address, and LED output pins to the checked wiring of our Pi Zero 2 W build. See [docs/CURRENT_WIRING.md](docs/CURRENT_WIRING.md) before running it. Ear servo drive and LED operation still need validation, and motor movement and calibration have not been validated on this build.
+
+The pre-built image described below was made for the upstream reference wiring. It does not include these changes or the separate autostart pin changes.
+
 ## Simplified install via pre-built Duck image
 
 As an alternative to setting up everything manually, the image release (current version: 0.2.3), available in the releases section of this repository, provides a ready-to-flash system image for the Open Duck Mini platform. It is tested to work on Open Duck hardware built to the standard specs.
@@ -54,7 +60,7 @@ source /usr/share/virtualenvwrapper/virtualenvwrapper.sh
 
 `sudo raspi-config` -> `Interface Options` -> `I2C`
 
-TODO set 400KHz ?
+For this robot's BNO055, set the Pi I²C bus to 10 kHz as described in [docs/CURRENT_WIRING.md](docs/CURRENT_WIRING.md).
 
 ### Set the usbserial latency timer
 
@@ -118,7 +124,7 @@ workon open-duck-mini-runtime
 Clone this repository on your rasp, cd into the repo, then :
 
 ```bash
-git clone https://github.com/apirrone/Open_Duck_Mini_Runtime
+git clone https://github.com/mofe64/Open_Duck_Mini_Runtime
 cd Open_Duck_Mini_Runtime
 git checkout v2
 pip install -e .
@@ -144,7 +150,7 @@ You can also run `python3 scripts/imu_server.py` on the robot and `python3 scrip
 
 ## Test motors
 
-This will allow you to verify all your motors are connected and configured.
+This script changes motor gain settings and includes movement tests. First verify joint assignment, offsets, and safe mechanical limits; see [docs/CURRENT_WIRING.md](docs/CURRENT_WIRING.md). It is not a read-only connectivity check.
 
 ```bash
 python3 scripts/check_motors.py
