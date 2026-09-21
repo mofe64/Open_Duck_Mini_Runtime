@@ -1,6 +1,6 @@
 # Current robot wiring and readiness
 
-This map comes from the physical checks on 20 September 2026. Pin numbers in code use BCM GPIO numbers, not physical header positions.
+This map is for our manually installed build and comes from the physical checks on 20 September 2026. Pin numbers in code use BCM GPIO numbers, not physical header positions.
 
 | Device | Physical pin | BCM GPIO or bus | Runtime status |
 |---|---:|---|---|
@@ -25,6 +25,5 @@ This map comes from the physical checks on 20 September 2026. Pin numbers in cod
 3. Keep `expression_features.antennas` set to `false` in `duck_config.json`. The existing antenna class targets GPIO13/12 with `pwmio`; changing those constants to GPIO15/14 would not establish a suitable 50 Hz servo signal. Select and validate a stable driver, and remove the serial-console boot argument before permanent use of GPIO14/15.
 4. Keep `expression_features.eyes` set to `false` until a first low-risk LED test on the Pi confirms voltage, current, and brightness. The reported 100Ω resistor is in series with each 3.0–3.6 V white LED, which is being operated below its 1 W rating. The `Eyes` class now drives GPIO27 and GPIO22 together; left/right eye assignment is still unknown and does not affect simultaneous blinking. Do not assume these GPIO outputs can power the LEDs at their rated 1 W.
 5. Calibrate and verify motor joint assignment, offsets, and direction before commanding motion. The 14 successful bus pings prove communication only. `scripts/check_motors.py` changes gains and includes movement tests, so it is not a read-only diagnostic.
-6. If using the prebuilt image's foot-controlled autostart, update its separate boot scripts from the reference foot pins to GPIO4/17. This repository does not contain those image scripts. Until then, leave autostart disabled.
 
-The code changes in this branch cover the confirmed sensor and LED pin wiring. Pi boot settings, ear drive, LED validation and side identification, calibration, and autostart remain to be completed on the robot.
+The code changes in this branch cover the confirmed sensor and LED pin wiring. Pi boot settings, ear drive, LED validation and side identification, and calibration remain to be completed on the robot.

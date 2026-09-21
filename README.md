@@ -2,9 +2,9 @@
 
 ## This robot's wiring
 
-This branch adapts the foot inputs, BNO055 address, and LED output pins to the checked wiring of our Pi Zero 2 W build. See [docs/CURRENT_WIRING.md](docs/CURRENT_WIRING.md) before running it. Ear servo drive and LED operation still need validation, and motor movement and calibration have not been validated on this build.
+We are installing this robot manually from this fork. This branch adapts the foot inputs, BNO055 address, and LED output pins to the checked wiring of our Pi Zero 2 W build. See [docs/CURRENT_WIRING.md](docs/CURRENT_WIRING.md) before running it. Ear servo drive and LED operation still need validation, and motor movement and calibration have not been validated on this build.
 
-The pre-built image described below was made for the upstream reference wiring. It does not include these changes or the separate autostart pin changes.
+The pre-built image section below is inherited from upstream and is not part of our manual installation. That image uses the reference wiring and does not include this fork's pin changes.
 
 ## Simplified install via pre-built Duck image
 
