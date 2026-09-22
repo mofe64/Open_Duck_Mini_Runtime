@@ -8,7 +8,7 @@ MIN_UPDATE_INTERVAL = 1 / 50  # 20ms
 
 
 def value_to_pulse_width(v):
-    return round(1500 + v * 500)
+    return round(1500 + v * 100)
 
 
 class Antennas:
