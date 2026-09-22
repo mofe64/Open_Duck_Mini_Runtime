@@ -10,10 +10,10 @@ class HWI:
 
         self.duck_config = duck_config
 
-        # Order matters here. On this build, the roll/pitch/knee/ankle motor IDs
-        # are mounted on the opposite legs from the original wiring map.
+        # Order matters here. On this build, all leg motor IDs are mounted
+        # on the opposite legs from the original wiring map.
         self.joints = {
-            "left_hip_yaw": 20,
+            "left_hip_yaw": 10,
             "left_hip_roll": 11,
             "left_hip_pitch": 12,
             "left_knee": 13,
@@ -24,7 +24,7 @@ class HWI:
             "head_roll": 33,
             # "left_antenna": None,
             # "right_antenna": None,
-            "right_hip_yaw": 10,
+            "right_hip_yaw": 20,
             "right_hip_roll": 21,
             "right_hip_pitch": 22,
             "right_knee": 23,
