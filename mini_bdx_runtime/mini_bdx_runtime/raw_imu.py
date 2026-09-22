@@ -1,6 +1,4 @@
 import adafruit_bno055
-import board
-import busio
 import numpy as np
 import os
 import pickle
@@ -18,7 +16,9 @@ class Imu:
         self.sampling_freq = sampling_freq
         self.calibrate = calibrate
 
-        i2c = busio.I2C(board.SCL, board.SDA)
+        from adafruit_extended_bus import ExtendedI2C
+
+        i2c = ExtendedI2C(8)
         self.imu = adafruit_bno055.BNO055_I2C(i2c, address=0x29)
 
         # self.imu.mode = adafruit_bno055.IMUPLUS_MODE
