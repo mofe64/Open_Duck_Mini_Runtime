@@ -3,7 +3,7 @@ import numpy as np
 import os
 import pickle
 
-from queue import Queue
+from queue import Empty, Full, Queue
 from threading import Thread
 import time
 
@@ -97,6 +97,10 @@ class Imu:
         }
         self.imu_queue = Queue(maxsize=1)
         Thread(target=self.imu_worker, daemon=True).start()
+        try:
+            self.last_imu_data = self.imu_queue.get(timeout=2)
+        except Empty as e:
+            raise RuntimeError("No valid IMU sample within 2 seconds") from e
 
     def tare_x(self):
         print("Taring x ...")
@@ -124,16 +128,23 @@ class Imu:
         while True:
             s = time.time()
             try:
-                gyro = np.array(self.imu.gyro).copy()
-                accelero = np.array(self.imu.acceleration).copy()
+                gyro = self.imu.gyro
+                accelero = self.imu.acceleration
+                if gyro is None or accelero is None:
+                    continue
+                gyro = np.asarray(gyro, dtype=float)
+                accelero = np.asarray(accelero, dtype=float)
             except Exception as e:
                 print("[IMU]:", e)
                 continue
 
-            if gyro is None or accelero is None:
+            if gyro.shape != (3,) or accelero.shape != (3,):
                 continue
 
-            if gyro.any() is None or accelero.any() is None:
+            if not np.isfinite(gyro).all() or not np.isfinite(accelero).all():
+                continue
+
+            if not accelero.any() or np.any(np.abs(accelero) > 100):
                 continue
 
             accelero[0] -= self.x_offset
@@ -143,14 +154,21 @@ class Imu:
                 "accelero": accelero,
             }
 
-            self.imu_queue.put(data)
+            try:
+                self.imu_queue.put_nowait(data)
+            except Full:
+                try:
+                    self.imu_queue.get_nowait()
+                except Empty:
+                    pass
+                self.imu_queue.put_nowait(data)
             took = time.time() - s
             time.sleep(max(0, 1 / self.sampling_freq - took))
 
     def get_data(self):
         try:
-            self.last_imu_data = self.imu_queue.get(False)  # non blocking
-        except Exception:
+            self.last_imu_data = self.imu_queue.get_nowait()
+        except Empty:
             pass
 
         return self.last_imu_data
