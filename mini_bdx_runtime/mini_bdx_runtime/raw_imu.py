@@ -1,9 +1,11 @@
 import adafruit_bno055
+import board
+import busio
 import numpy as np
 import os
 import pickle
 
-from queue import Empty, Full, Queue
+from queue import Queue
 from threading import Thread
 import time
 
@@ -16,9 +18,7 @@ class Imu:
         self.sampling_freq = sampling_freq
         self.calibrate = calibrate
 
-        from adafruit_extended_bus import ExtendedI2C
-
-        i2c = ExtendedI2C(8)
+        i2c = busio.I2C(board.SCL, board.SDA)
         self.imu = adafruit_bno055.BNO055_I2C(i2c, address=0x29)
 
         # self.imu.mode = adafruit_bno055.IMUPLUS_MODE
@@ -97,10 +97,6 @@ class Imu:
         }
         self.imu_queue = Queue(maxsize=1)
         Thread(target=self.imu_worker, daemon=True).start()
-        try:
-            self.last_imu_data = self.imu_queue.get(timeout=2)
-        except Empty as e:
-            raise RuntimeError("No valid IMU sample within 2 seconds") from e
 
     def tare_x(self):
         print("Taring x ...")
@@ -128,23 +124,16 @@ class Imu:
         while True:
             s = time.time()
             try:
-                gyro = self.imu.gyro
-                accelero = self.imu.acceleration
-                if gyro is None or accelero is None:
-                    continue
-                gyro = np.asarray(gyro, dtype=float)
-                accelero = np.asarray(accelero, dtype=float)
+                gyro = np.array(self.imu.gyro).copy()
+                accelero = np.array(self.imu.acceleration).copy()
             except Exception as e:
                 print("[IMU]:", e)
                 continue
 
-            if gyro.shape != (3,) or accelero.shape != (3,):
+            if gyro is None or accelero is None:
                 continue
 
-            if not np.isfinite(gyro).all() or not np.isfinite(accelero).all():
-                continue
-
-            if not accelero.any() or np.any(np.abs(accelero) > 100):
+            if gyro.any() is None or accelero.any() is None:
                 continue
 
             accelero[0] -= self.x_offset
@@ -154,21 +143,14 @@ class Imu:
                 "accelero": accelero,
             }
 
-            try:
-                self.imu_queue.put_nowait(data)
-            except Full:
-                try:
-                    self.imu_queue.get_nowait()
-                except Empty:
-                    pass
-                self.imu_queue.put_nowait(data)
+            self.imu_queue.put(data)
             took = time.time() - s
             time.sleep(max(0, 1 / self.sampling_freq - took))
 
     def get_data(self):
         try:
-            self.last_imu_data = self.imu_queue.get_nowait()
-        except Empty:
+            self.last_imu_data = self.imu_queue.get(False)  # non blocking
+        except Exception:
             pass
 
         return self.last_imu_data
