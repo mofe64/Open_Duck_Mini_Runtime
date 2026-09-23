@@ -9,7 +9,7 @@ import argparse
 
 
 class IMUServer:
-    def __init__(self, imu=None):
+    def __init__(self, imu=None, pitch_bias=0, upside_down=False, i2c_bus=None):
         self.host = "0.0.0.0"
         self.port = 1234
 
@@ -21,7 +21,12 @@ class IMUServer:
         self.server_socket.bind((self.host, self.port))
 
         if imu is None:
-            self.imu = Imu(50, user_pitch_bias=args.pitch_bias, upside_down=False)
+            self.imu = Imu(
+                50,
+                user_pitch_bias=pitch_bias,
+                upside_down=upside_down,
+                i2c_bus=i2c_bus,
+            )
         else:
             self.imu = imu
         self.stop = False
@@ -50,8 +55,14 @@ class IMUServer:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--pitch_bias", type=float, default=0, help="deg")
+    parser.add_argument("--i2c-bus", type=int, default=None)
+    parser.add_argument("--upside-down", action="store_true")
     args = parser.parse_args()
-    imu_server = IMUServer()
+    imu_server = IMUServer(
+        pitch_bias=args.pitch_bias,
+        upside_down=args.upside_down,
+        i2c_bus=args.i2c_bus,
+    )
     try:
         while True:
             time.sleep(0.01)

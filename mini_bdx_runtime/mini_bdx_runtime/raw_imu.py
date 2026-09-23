@@ -1,9 +1,13 @@
 import adafruit_bno055
-import board
-import busio
 import numpy as np
 import os
 import pickle
+import argparse
+
+if __package__:
+    from .imu_i2c import open_imu_i2c
+else:
+    from imu_i2c import open_imu_i2c
 
 from queue import Queue
 from threading import Thread
@@ -13,12 +17,17 @@ import time
 # TODO filter spikes
 class Imu:
     def __init__(
-        self, sampling_freq, user_pitch_bias=0, calibrate=False, upside_down=True
+        self,
+        sampling_freq,
+        user_pitch_bias=0,
+        calibrate=False,
+        upside_down=True,
+        i2c_bus=None,
     ):
         self.sampling_freq = sampling_freq
         self.calibrate = calibrate
 
-        i2c = busio.I2C(board.SCL, board.SDA)
+        i2c = open_imu_i2c(i2c_bus)
         self.imu = adafruit_bno055.BNO055_I2C(i2c, address=0x29)
 
         # self.imu.mode = adafruit_bno055.IMUPLUS_MODE
@@ -157,7 +166,11 @@ class Imu:
 
 
 if __name__ == "__main__":
-    imu = Imu(50, upside_down=False)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--i2c-bus", type=int, default=None)
+    parser.add_argument("--upside-down", action="store_true")
+    args = parser.parse_args()
+    imu = Imu(50, upside_down=args.upside_down, i2c_bus=args.i2c_bus)
     while True:
         data = imu.get_data()
         # print(data)

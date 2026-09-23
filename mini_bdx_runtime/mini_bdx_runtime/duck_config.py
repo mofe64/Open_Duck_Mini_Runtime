@@ -18,9 +18,11 @@ class DuckConfig:
         """
         self.default = False
         try:
-            self.json_config = (
-                json.load(open(config_json_path, "r")) if config_json_path else {}
-            )
+            if config_json_path:
+                with open(config_json_path, "r") as config_file:
+                    self.json_config = json.load(config_file)
+            else:
+                self.json_config = {}
         except FileNotFoundError:
             print(
                 f"Warning : didn't find the config json file at {config_json_path}, using default values"
@@ -48,6 +50,11 @@ class DuckConfig:
 
         self.start_paused = self.json_config.get("start_paused", False)
         self.imu_upside_down = self.json_config.get("imu_upside_down", False)
+        self.imu_i2c_bus = self.json_config.get("imu_i2c_bus")
+        if self.imu_i2c_bus is not None and (
+            type(self.imu_i2c_bus) is not int or self.imu_i2c_bus < 0
+        ):
+            raise ValueError("imu_i2c_bus must be a non-negative integer or null")
         self.phase_frequency_factor_offset = self.json_config.get(
             "phase_frequency_factor_offset", 0.0
         )

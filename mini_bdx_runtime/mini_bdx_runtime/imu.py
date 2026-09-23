@@ -1,9 +1,12 @@
 import adafruit_bno055
-import board
-import busio
 import numpy as np
 import pickle
 import os
+
+if __package__:
+    from .imu_i2c import open_imu_i2c
+else:
+    from imu_i2c import open_imu_i2c
 
 # import serial
 
@@ -16,7 +19,12 @@ from scipy.spatial.transform import Rotation as R
 # TODO filter spikes
 class Imu:
     def __init__(
-        self, sampling_freq, user_pitch_bias=0, calibrate=False, upside_down=True
+        self,
+        sampling_freq,
+        user_pitch_bias=0,
+        calibrate=False,
+        upside_down=True,
+        i2c_bus=None,
     ):
         self.sampling_freq = sampling_freq
         self.user_pitch_bias = user_pitch_bias
@@ -26,7 +34,7 @@ class Imu:
         # self.uart = serial.Serial("/dev/ttyS0", baudrate=9600)
         # self.imu = adafruit_bno055.BNO055_UART(self.uart)
 
-        i2c = busio.I2C(board.SCL, board.SDA)
+        i2c = open_imu_i2c(i2c_bus)
         self.imu = adafruit_bno055.BNO055_I2C(i2c, address=0x29)
 
         self.imu.mode = adafruit_bno055.IMUPLUS_MODE
