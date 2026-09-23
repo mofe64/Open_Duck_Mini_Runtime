@@ -18,6 +18,8 @@ This map is for our manually installed build and comes from the physical checks 
 | LED negatives | 9 | Ground | Checked |
 | Motor bus adapter | USB | `/dev/ttyACM0` during check | All 14 joints tracked a supported walk pose test |
 
+The two 18650 cells feed a BMS. The BMS output feeds the servo driver through a switch and also feeds a 5 V BEC for the Pi and other components. The BMS and BEC current ratings have not been confirmed. A fault at the shared battery or BMS output could affect both the motors and Pi; this is a hypothesis, not a measured cause of the walk failure.
+
 ## Before running the robot
 
 1. Hardware I²C produced bit-sized gyro and acceleration jumps at default, 10 kHz, and 5 kHz settings. With the hardware controller disabled and `dtoverlay=i2c-gpio,i2c_gpio_sda=2,i2c_gpio_scl=3,bus=8`, the same wiring produced 600 stationary samples with no read errors or suspicious jumps. An isolated 300-pair gyro and acceleration read test achieved 338.6 pairs/s, above the 50 Hz walk target; full-loop timing is still unverified. The IMU readers now default to bus 8 in code. The IMU was recalibrated on bus 8 and gave steady readings with motor power on. Upright, nose-down, and right-side-down checks confirmed the configured upside-down axis mapping.
