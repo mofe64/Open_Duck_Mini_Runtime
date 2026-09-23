@@ -101,6 +101,66 @@ class HWI:
         self.io.set_kps(list(self.joints.values()), self.kps)
         print("turn on : high kps")
 
+    def turn_on_smooth(self, final_kps, ramp_seconds=20.0):
+        """Move to the walking start pose before raising motor gains."""
+        names = list(self.joints)
+        ids = list(self.joints.values())
+        if len(final_kps) != len(ids):
+            raise ValueError("Expected one P gain per joint")
+        if ramp_seconds <= 0:
+            raise ValueError("ramp_seconds must be positive")
+
+        positions = self.get_present_positions()
+        if positions is None or len(positions) != len(ids):
+            raise RuntimeError("Could not read all motor positions before startup")
+
+        start = np.asarray(positions, dtype=float)
+        target = np.array([self.init_pos[name] for name in names], dtype=float)
+        self.kps = list(final_kps)
+        initial_kp = min(8, min(self.kps))
+        steps = max(1, round(ramp_seconds / 0.05))
+
+        def set_fraction(fraction):
+            values = start + (target - start) * fraction
+            self.set_position_all(
+                {name: float(value) for name, value in zip(names, values)}
+            )
+
+        def check_position(fraction, limit):
+            actual = self.get_present_positions()
+            if actual is None or len(actual) != len(ids):
+                raise RuntimeError("Lost motor position readings during startup")
+            wanted = start + (target - start) * fraction
+            errors = np.abs(actual - wanted)
+            worst = int(np.argmax(errors))
+            print(f"Startup {fraction:.0%}: {names[worst]} error {errors[worst]:.3f} rad")
+            if errors[worst] > limit:
+                raise RuntimeError(f"{names[worst]} is not following its target")
+
+        try:
+            self.io.set_kps(ids, [initial_kp] * len(ids))
+            set_fraction(0)
+            self.io.enable_torque(ids)
+
+            for step in range(1, steps + 1):
+                fraction = step / steps
+                set_fraction(fraction)
+                time.sleep(0.05)
+                if step % 20 == 0 or step == steps:
+                    check_position(fraction, 0.25)
+
+            for fraction in (0.2, 0.4, 0.6, 0.8, 1.0):
+                gains = [
+                    int(round(initial_kp + (kp - initial_kp) * fraction))
+                    for kp in self.kps
+                ]
+                self.io.set_kps(ids, gains)
+                time.sleep(2)
+                check_position(1, 0.15)
+        except BaseException:
+            self.turn_off()
+            raise
+
     def turn_off(self):
         self.io.disable_torque(list(self.joints.values()))
 

@@ -68,8 +68,6 @@ class RLWalk:
 
         self.hwi = HWI(self.duck_config, serial_port)
 
-        self.start()
-
         self.imu = Imu(
             sampling_freq=int(self.control_freq),
             user_pitch_bias=self.pitch_bias,
@@ -119,6 +117,9 @@ class RLWalk:
             )
         if self.duck_config.antennas:
             self.antennas = Antennas()
+
+        # Complete sensor and controller setup before enabling the motors.
+        self.start()
 
     def get_obs(self):
 
@@ -178,11 +179,8 @@ class RLWalk:
         # lower head kps
         kps[5:9] = [8, 8, 8, 8]
 
-        self.hwi.set_kps(kps)
         self.hwi.set_kds(kds)
-        self.hwi.turn_on()
-
-        time.sleep(2)
+        self.hwi.turn_on_smooth(kps)
 
     def get_phase_frequency_factor(self, x_velocity):
 
@@ -328,17 +326,21 @@ class RLWalk:
                 time.sleep(max(0, 1 / self.control_freq - took))
 
         except KeyboardInterrupt:
-            if self.duck_config.antennas:
-                self.antennas.stop()
-            if self.duck_config.eyes:
-                self.eyes.stop()
-            if self.duck_config.projector:
-                self.projector.stop()
-            self.feet_contacts.stop()
-
-        if self.save_obs:
-            pickle.dump(self.saved_obs, open("robot_saved_obs.pkl", "wb"))
-        print("TURNING OFF")
+            pass
+        finally:
+            try:
+                self.hwi.turn_off()
+            finally:
+                if self.duck_config.antennas:
+                    self.antennas.stop()
+                if self.duck_config.eyes:
+                    self.eyes.stop()
+                if self.duck_config.projector:
+                    self.projector.stop()
+                self.feet_contacts.stop()
+                if self.save_obs:
+                    pickle.dump(self.saved_obs, open("robot_saved_obs.pkl", "wb"))
+                print("TURNING OFF")
 
 
 if __name__ == "__main__":
