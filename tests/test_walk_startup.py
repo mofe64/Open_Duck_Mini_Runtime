@@ -138,6 +138,8 @@ class WalkShutdownTests(unittest.TestCase):
         self.module = load_walk_module()
         self.walk = self.module.RLWalk.__new__(self.module.RLWalk)
         self.walk.hwi = types.SimpleNamespace(turn_off=Mock())
+        self.walk.hwi.get_present_positions = Mock(return_value=numpy.zeros(14))
+        self.walk.hwi.get_present_velocities = Mock(return_value=numpy.zeros(14))
         self.walk.feet_contacts = types.SimpleNamespace(stop=Mock())
         self.walk.duck_config = types.SimpleNamespace(
             antennas=False, eyes=False, projector=False
@@ -159,6 +161,35 @@ class WalkShutdownTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "sensor failed"):
             self.walk.run()
         self.walk.hwi.turn_off.assert_called_once()
+        self.walk.feet_contacts.stop.assert_called_once()
+
+    def test_missing_motor_feedback_stops_instead_of_retrying(self):
+        self.walk.paused = False
+        self.walk.get_obs = Mock(return_value=None)
+        with self.assertRaisesRegex(RuntimeError, "Motor feedback lost"):
+            self.walk.run()
+        self.walk.get_obs.assert_called_once()
+        self.walk.hwi.turn_off.assert_called_once()
+
+    def test_missing_positions_skip_velocity_read(self):
+        self.walk.imu = types.SimpleNamespace(get_data=Mock(return_value={}))
+        self.walk.hwi.get_present_positions.return_value = None
+        self.assertIsNone(self.walk.get_obs())
+        self.walk.hwi.get_present_velocities.assert_not_called()
+
+    def test_missing_motor_feedback_while_paused_stops(self):
+        self.walk.paused = True
+        self.walk.hwi.get_present_positions.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "Motor feedback lost while paused"):
+            self.walk.run()
+        self.walk.hwi.turn_off.assert_called_once()
+
+    def test_failed_torque_off_reports_manual_power_cut(self):
+        self.walk.paused = True
+        self.walk.hwi.turn_off.side_effect = OSError("I/O error")
+        with patch.object(self.module.time, "sleep", side_effect=KeyboardInterrupt):
+            with self.assertRaisesRegex(RuntimeError, "torque could not be disabled"):
+                self.walk.run()
         self.walk.feet_contacts.stop.assert_called_once()
 
 

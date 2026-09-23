@@ -1,5 +1,6 @@
 import time
 import pickle
+import sys
 
 import numpy as np
 from mini_bdx_runtime.rustypot_position_hwi import HWI
@@ -132,6 +133,9 @@ class RLWalk:
             ]
         )  # rad
 
+        if dof_pos is None:
+            return None
+
         dof_vel = self.hwi.get_present_velocities(
             ignore=[
                 "left_antenna",
@@ -139,7 +143,7 @@ class RLWalk:
             ]
         )  # rad/s
 
-        if dof_pos is None or dof_vel is None:
+        if dof_vel is None:
             return None
 
         if len(dof_pos) != self.num_dofs:
@@ -196,6 +200,8 @@ class RLWalk:
 
     def run(self):
         i = 0
+        last_paused_feedback_check = 0
+        run_failed = False
         try:
             print("Starting")
             start_t = time.time()
@@ -245,12 +251,16 @@ class RLWalk:
                             print("UNPAUSE")
 
                 if self.paused:
+                    if t - last_paused_feedback_check >= 1:
+                        if self.hwi.get_present_positions() is None:
+                            raise RuntimeError("Motor feedback lost while paused; stopping walk")
+                        last_paused_feedback_check = t
                     time.sleep(0.1)
                     continue
 
                 obs = self.get_obs()
                 if obs is None:
-                    continue
+                    raise RuntimeError("Motor feedback lost; stopping walk")
 
                 self.imitation_i += 1 * (
                     self.phase_frequency_factor + self.phase_frequency_factor_offset
@@ -327,9 +337,21 @@ class RLWalk:
 
         except KeyboardInterrupt:
             pass
+        except BaseException:
+            run_failed = True
+            raise
         finally:
+            torque_error = None
             try:
                 self.hwi.turn_off()
+            except Exception as exc:
+                torque_error = exc
+                print(
+                    f"Could not disable motor torque over the bus ({exc}); "
+                    "switch off motor power.",
+                    file=sys.stderr,
+                    flush=True,
+                )
             finally:
                 if self.duck_config.antennas:
                     self.antennas.stop()
@@ -341,6 +363,8 @@ class RLWalk:
                 if self.save_obs:
                     pickle.dump(self.saved_obs, open("robot_saved_obs.pkl", "wb"))
                 print("TURNING OFF")
+            if torque_error is not None and not run_failed:
+                raise RuntimeError("Motor torque could not be disabled") from torque_error
 
 
 if __name__ == "__main__":
