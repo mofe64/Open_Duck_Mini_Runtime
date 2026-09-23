@@ -1,3 +1,4 @@
+import os
 import pygame
 from threading import Thread
 from queue import Queue
@@ -26,6 +27,8 @@ class XBoxController:
         self.last_commands = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.last_left_trigger = 0.0
         self.last_right_trigger = 0.0
+        # The Pi runs without a focused display when controlled over SSH.
+        os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
         pygame.init()
         self.p1 = pygame.joystick.Joystick(0)
         self.p1.init()

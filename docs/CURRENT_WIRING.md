@@ -25,6 +25,7 @@ This map is for our manually installed build and comes from the physical checks 
 3. The antenna class targets GPIO15/14 through the local `pigpio` service. The serial-console boot argument was removed. Each ear moved and stopped during the 1400–1600 µs test, so the runtime is limited to that range and antennas are enabled in the Pi config.
 4. Both eyes lit separately: GPIO27 is left and GPIO22 is right. The 15-second runtime blink check passed, and `expression_features.eyes` is enabled in the Pi config. Current was not measured; the fitted 100Ω resistors limit it below the LEDs' 1 W rating.
 5. All 14 motors followed a supported, 20-second move into the walk start pose at gain 8. While holding that pose, leg gains were raised in stages to 30 and head gains stayed at 8. The largest position error fell to about 0.03 rad, the Pi stayed connected, and `vcgencmd get_throttled` stayed at `0x0`. The duck returned to its starting pose. This does not test dynamic walking. `scripts/check_motors.py` changes gains and includes movement tests, so it is not a read-only diagnostic.
+6. The Bluetooth controller paired and Linux received its buttons and sticks. Pygame's controller class detected A presses over SSH once background joystick input was enabled. A live walking run has not been tested.
 
 The first policy run and power stability during dynamic walking remain unverified. The earlier SSH disconnect during `find_soft_offsets.py` has not been explained. That script uses default offsets and raised all 14 motor gains to 32, unlike the supported test above.
 
