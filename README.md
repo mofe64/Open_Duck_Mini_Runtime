@@ -54,8 +54,6 @@ source /usr/share/virtualenvwrapper/virtualenvwrapper.sh
 
 `sudo raspi-config` -> `Interface Options` -> `I2C`
 
-For this robot's BNO055, set the Pi I²C bus to 10 kHz as described in [docs/CURRENT_WIRING.md](docs/CURRENT_WIRING.md).
-
 ### Set the usbserial latency timer
 
 ```bash

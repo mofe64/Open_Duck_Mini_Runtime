@@ -5,9 +5,9 @@ import pickle
 import argparse
 
 if __package__:
-    from .imu_i2c import open_imu_i2c
+    from .imu_i2c import DEFAULT_IMU_I2C_BUS, open_imu_i2c
 else:
-    from imu_i2c import open_imu_i2c
+    from imu_i2c import DEFAULT_IMU_I2C_BUS, open_imu_i2c
 
 from queue import Queue
 from threading import Thread
@@ -22,7 +22,7 @@ class Imu:
         user_pitch_bias=0,
         calibrate=False,
         upside_down=True,
-        i2c_bus=None,
+        i2c_bus=DEFAULT_IMU_I2C_BUS,
     ):
         self.sampling_freq = sampling_freq
         self.calibrate = calibrate
@@ -167,7 +167,7 @@ class Imu:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--i2c-bus", type=int, default=None)
+    parser.add_argument("--i2c-bus", type=int, default=DEFAULT_IMU_I2C_BUS)
     parser.add_argument("--upside-down", action="store_true")
     args = parser.parse_args()
     imu = Imu(50, upside_down=args.upside_down, i2c_bus=args.i2c_bus)

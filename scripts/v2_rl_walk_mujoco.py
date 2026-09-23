@@ -74,7 +74,6 @@ class RLWalk:
             sampling_freq=int(self.control_freq),
             user_pitch_bias=self.pitch_bias,
             upside_down=self.duck_config.imu_upside_down,
-            i2c_bus=self.duck_config.imu_i2c_bus,
         )
 
         self.feet_contacts = FeetContacts()

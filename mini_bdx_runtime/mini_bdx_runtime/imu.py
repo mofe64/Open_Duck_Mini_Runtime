@@ -4,9 +4,9 @@ import pickle
 import os
 
 if __package__:
-    from .imu_i2c import open_imu_i2c
+    from .imu_i2c import DEFAULT_IMU_I2C_BUS, open_imu_i2c
 else:
-    from imu_i2c import open_imu_i2c
+    from imu_i2c import DEFAULT_IMU_I2C_BUS, open_imu_i2c
 
 # import serial
 
@@ -24,7 +24,7 @@ class Imu:
         user_pitch_bias=0,
         calibrate=False,
         upside_down=True,
-        i2c_bus=None,
+        i2c_bus=DEFAULT_IMU_I2C_BUS,
     ):
         self.sampling_freq = sampling_freq
         self.user_pitch_bias = user_pitch_bias

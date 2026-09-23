@@ -50,11 +50,6 @@ class DuckConfig:
 
         self.start_paused = self.json_config.get("start_paused", False)
         self.imu_upside_down = self.json_config.get("imu_upside_down", False)
-        self.imu_i2c_bus = self.json_config.get("imu_i2c_bus")
-        if self.imu_i2c_bus is not None and (
-            type(self.imu_i2c_bus) is not int or self.imu_i2c_bus < 0
-        ):
-            raise ValueError("imu_i2c_bus must be a non-negative integer or null")
         self.phase_frequency_factor_offset = self.json_config.get(
             "phase_frequency_factor_offset", 0.0
         )
