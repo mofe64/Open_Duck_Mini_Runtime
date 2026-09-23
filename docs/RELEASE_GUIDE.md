@@ -11,7 +11,7 @@ As a next step, you can modify the system as described below in order to add the
 2. a tiny **GPIO chooser** (decides which robot script to run)
 3. a **unified launcher** that auto-detects the correct username/paths
 4. a **systemd service** that runs the launcher at boot
-5. the **Wi-Fi fallback** (hotspot) scripts + service
+5. the **Wi-Fi fallback** (hotspot) script + timer
 8. a **auto venv mounter** and **user information** that is shown after SSH login
 
 ---
@@ -38,8 +38,10 @@ As an example if you are based in Germany.
 ```bash
 sudo nmcli connection add type wifi ifname wlan0 con-name Openduck ssid Openduck
 sudo nmcli connection modify Openduck 802-11-wireless.mode ap 802-11-wireless.band bg
-sudo nmcli connection modify Openduck ipv4.method shared ipv6.method ignore
-sudo nmcli connection modify Openduck wifi-sec.key-mgmt wpa-psk wifi-sec.psk "openduck1234"
+sudo nmcli connection modify Openduck ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method ignore
+AP_PASSWORD=$(openssl rand -hex 8)
+sudo nmcli connection modify Openduck wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$AP_PASSWORD"
+printf "Openduck password: %s\n" "$AP_PASSWORD"
 sudo nmcli connection modify Openduck connection.autoconnect no
 ```
 
@@ -250,135 +252,102 @@ WantedBy=multi-user.target
 
 ---
 
-# 5) Wi-Fi “Openduck” fallback (hotspot if still offline)
+# 5) Wi-Fi “Openduck” fallback
 
-## 5a) Boot-time fallback script
+This manual setup checks whether `wlan0` is connected to a Wi-Fi network. If it is
+not, it retries the saved home profile and then starts the `Openduck` hotspot.
+Checking local Wi-Fi state keeps SSH available when the router has no internet.
 
-**Create the file:**
+In section 0, set the hotspot's address to `10.42.0.1/24` and use a unique
+password. The hotspot profile must have `connection.autoconnect no`.
 
-```bash
-sudo nano /usr/local/bin/openduck-wifi-fallback.sh
-```
+## 5a) Fallback script
 
-**Paste this content, then save & close:**
+Create `/usr/local/sbin/openduck-wifi-fallback` with the following content.
+Replace `YOUR_WIFI_PROFILE_NAME` with the saved connection name shown by
+`nmcli connection show`.
 
-```bash
-#!/bin/bash
-set -euo pipefail
-log(){ logger -t openduck-fallback "$*"; echo "$*"; }
+```sh
+#!/bin/sh
+set -eu
 
-timeout_sec=15
-log "Waiting up to ${timeout_sec}s for NetworkManager to connect..."
-if nm-online -q -t "$timeout_sec"; then
-  log "Connected. Ensure hotspot is down (if active)."
-  nmcli -t -f NAME con show --active | grep -qx 'Openduck' && nmcli con down Openduck || true
-  exit 0
+interface=wlan0
+home='YOUR_WIFI_PROFILE_NAME'
+hotspot=Openduck
+
+state=$(nmcli -g GENERAL.STATE device show "$interface" 2>/dev/null | cut -d' ' -f1 || true)
+case "$state" in
+    100) exit 0 ;;                 # Already connected to Wi-Fi or the hotspot.
+    40|50|60|70|80|90|110) exit 0 ;; # NetworkManager is changing connections.
+esac
+
+nmcli radio wifi on
+if nmcli --wait 20 connection up "$home" ifname "$interface" >/dev/null 2>&1; then
+    logger -t openduck-wifi-fallback 'Home Wi-Fi reconnected'
+    exit 0
 fi
 
-log "Still offline after wait; checking wifi state..."
-nmcli radio || true
-nmcli device status || true
+state=$(nmcli -g GENERAL.STATE device show "$interface" 2>/dev/null | cut -d' ' -f1 || true)
+[ "$state" = 100 ] && exit 0
 
-nmcli dev wifi rescan || true
-visible_count=$(nmcli -t -f SSID dev wifi list | awk 'length>0' | wc -l || echo 0)
-log "Visible SSIDs (info): ${visible_count}"
-
-if ! nm-online -q -t 1; then
-  log "Offline ⇒ bringing up 'Openduck' AP…"
-  nmcli con up Openduck || { log "Failed to start Openduck AP"; exit 0; }
-  log "Hotspot started."
+if nmcli --wait 20 connection up "$hotspot" ifname "$interface" >/dev/null 2>&1; then
+    logger -t openduck-wifi-fallback 'Openduck hotspot active at 10.42.0.1'
 else
-  log "Came online during checks; not starting AP."
+    logger -t openduck-wifi-fallback 'Could not activate Openduck hotspot'
+    exit 1
 fi
-exit 0
 ```
-
-**Make it executable:**
 
 ```bash
-sudo chmod +x /usr/local/bin/openduck-wifi-fallback.sh
+sudo chmod 755 /usr/local/sbin/openduck-wifi-fallback
 ```
 
-## 5b) Auto-tear-down/re-enable hook (runs on NM events)
+## 5b) Service and timer
 
-**Create the file:**
+Create `/etc/systemd/system/openduck-wifi-fallback.service`:
 
-```bash
-sudo nano /etc/NetworkManager/dispatcher.d/99-openduck-hotspot
-```
-
-**Paste this content, then save & close:**
-
-```bash
-#!/bin/bash
-# $1 = iface, $2 = event
-IFACE="$1"; EVENT="$2"
-[ "$IFACE" = "wlan0" ] || exit 0
-
-logger -t openduck "dispatcher: $IFACE $EVENT"
-
-# If we connect to any non-Openduck Wi-Fi, ensure hotspot is down
-if [ "$EVENT" = "up" ]; then
-  active_on_wlan0=$(nmcli -t -f NAME,DEVICE con show --active | awk -F: '$2=="wlan0"{print $1}')
-  if [ -n "$active_on_wlan0" ] && [ "$active_on_wlan0" != "Openduck" ]; then
-    nmcli -t -f NAME con show --active | grep -qx 'Openduck' && nmcli con down Openduck || true
-  fi
-fi
-
-# If we go offline and no networks are usable, bring AP up
-if [ "$EVENT" = "down" ] || [ "$EVENT" = "connectivity-change" ] || [ "$EVENT" = "dhcp4-change" ]; then
-  if ! nm-online -q -t 1; then
-    nmcli dev wifi rescan || true
-    visible_count=$(nmcli -t -f SSID dev wifi list | awk 'length>0' | wc -l || echo 0)
-    if [ "$visible_count" -eq 0 ]; then
-      nmcli -t -f NAME con show --active | grep -qx 'Openduck' || nmcli con up Openduck
-    end if
-  fi
-fi
-exit 0
-```
-
-**Make it executable:**
-
-```bash
-sudo chmod +x /etc/NetworkManager/dispatcher.d/99-openduck-hotspot
-```
-
-## 5c) Service to run the fallback at boot
-
-**Create the service file:**
-
-```bash
-sudo nano /etc/systemd/system/openduck-wifi-fallback.service
-```
-
-**Paste this content, then save & close:**
-
-```
+```ini
 [Unit]
-Description=Openduck Wi-Fi fallback (start hotspot if offline)
+Description=Restore Wi-Fi or start the Openduck fallback hotspot
+Requires=NetworkManager.service
 After=NetworkManager.service
-Wants=network-online.target
-Before=open-duck-walk.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/openduck-wifi-fallback.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/usr/local/sbin/openduck-wifi-fallback
+TimeoutStartSec=50s
 ```
 
----
+Create `/etc/systemd/system/openduck-wifi-fallback.timer`:
 
-# 6) Enable and start everything
+```ini
+[Unit]
+Description=Check for Wi-Fi loss and start the Openduck fallback hotspot
+
+[Timer]
+OnBootSec=45s
+OnUnitInactiveSec=20s
+AccuracySec=5s
+Unit=openduck-wifi-fallback.service
+
+[Install]
+WantedBy=timers.target
+```
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable openduck-wifi-fallback.service
+sudo systemctl enable --now openduck-wifi-fallback.timer
+```
+
+The timer also handles Wi-Fi loss after boot. On a single-radio Pi, the hotspot
+uses `wlan0` until you manually reconnect it to home Wi-Fi.
+
+---
+
+# 6) Enable and start the robot service
+
+```bash
 sudo systemctl enable open-duck-walk.service
-sudo systemctl restart openduck-wifi-fallback.service
 sudo systemctl restart open-duck-walk.service
 ```
 
@@ -386,53 +355,33 @@ sudo systemctl restart open-duck-walk.service
 
 # 7) How to test
 
-* **See launcher logs live:**
+```bash
+systemctl is-enabled openduck-wifi-fallback.timer
+systemctl list-timers openduck-wifi-fallback.timer
+journalctl -u openduck-wifi-fallback.service -n 20 --no-pager
+nmcli -t -f NAME,TYPE,DEVICE connection show --active
+```
 
-  ```bash
-  sudo journalctl -f | grep openduck
-  ```
-* **Run launcher once (without reboot) to verify user/paths:**
-
-  ```bash
-  sudo /usr/local/bin/start-walk.sh
-  ```
-* **See hotspot come up if offline:**
-
-  ```bash
-  nmcli -t -f NAME,TYPE,DEVICE con show --active
-  ```
+When `Openduck` is active, join it from your laptop and connect with
+`ssh USER@10.42.0.1`, replacing `USER` with the Pi's username.
 
 ---
 
 # 8) Everyday admin
 
-* **Disable auto-hotspot at boot:**
+```bash
+# Disable or re-enable the automatic fallback.
+sudo systemctl disable --now openduck-wifi-fallback.timer
+sudo systemctl enable --now openduck-wifi-fallback.timer
 
-  ```bash
-  sudo systemctl disable openduck-wifi-fallback.service
-  sudo systemctl stop openduck-wifi-fallback.service
-  ```
-* **Re-enable auto-hotspot:**
+# Change the hotspot password. It takes effect on the next activation.
+sudo nmcli connection modify Openduck wifi-sec.psk 'NEW_UNIQUE_PASSWORD'
 
-  ```bash
-  sudo systemctl enable openduck-wifi-fallback.service
-  sudo systemctl start openduck-wifi-fallback.service
-  ```
-* **Change hotspot password:**
+# Return from the hotspot to the saved home Wi-Fi profile.
+sudo nmcli connection up 'YOUR_WIFI_PROFILE_NAME' ifname wlan0
+```
 
-  ```bash
-  sudo nmcli connection modify Openduck wifi-sec.psk "NEWstrongPASS123"
-  sudo nmcli connection down Openduck || true
-  sudo nmcli connection up Openduck
-  ```
-* **Check services:**
-
-  ```bash
-  systemctl is-enabled open-duck-walk.service
-  systemctl is-enabled openduck-wifi-fallback.service
-  sudo systemctl status open-duck-walk.service
-  sudo systemctl status openduck-wifi-fallback.service
-  ```
+---
 
 # 9) Automatically mount the virtual environment and show greeting message
 
