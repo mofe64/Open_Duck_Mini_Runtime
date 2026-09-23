@@ -192,6 +192,72 @@ class WalkShutdownTests(unittest.TestCase):
                 self.walk.run()
         self.walk.feet_contacts.stop.assert_called_once()
 
+    def test_freeze_head_ignores_policy_and_controller_head_commands(self):
+        self.walk.freeze_head = True
+        self.walk.paused = False
+        self.walk.init_pos = numpy.arange(14, dtype=float)
+        self.walk.last_commands = numpy.array([0, 0, 0, 0.5, 0.6, 0.7, 0.8])
+        self.walk.policy = types.SimpleNamespace(infer=Mock(return_value=numpy.ones(14)))
+        self.walk.get_obs = Mock(return_value=numpy.zeros(100))
+        self.walk.last_action = numpy.zeros(14)
+        self.walk.last_last_action = numpy.zeros(14)
+        self.walk.last_last_last_action = numpy.zeros(14)
+        self.walk.phase_frequency_factor = 1.0
+        self.walk.phase_frequency_factor_offset = 0.0
+        self.walk.PRM = types.SimpleNamespace(nb_steps_in_period=100)
+        self.walk.imitation_i = 0
+        self.walk.action_filter = None
+        self.walk.action_scale = 0.25
+        self.walk.replay_obs = None
+        names = [f"joint_{i}" for i in range(14)]
+        self.walk.hwi.joints = dict.fromkeys(names)
+        sent = {}
+
+        def capture_and_stop(targets):
+            sent.update(targets)
+            raise KeyboardInterrupt
+
+        self.walk.hwi.set_position_all = Mock(side_effect=capture_and_stop)
+        with patch.object(
+            self.module,
+            "make_action_dict",
+            side_effect=lambda targets, joints: dict(zip(joints, targets)),
+        ):
+            self.walk.run()
+
+        for i in range(5, 9):
+            self.assertEqual(sent[f"joint_{i}"], self.walk.init_pos[i])
+        self.assertEqual(sent["joint_4"], self.walk.init_pos[4] + 0.25)
+        self.assertEqual(sent["joint_9"], self.walk.init_pos[9] + 0.25)
+        numpy.testing.assert_array_equal(self.walk.last_action[5:9], numpy.zeros(4))
+        self.walk.hwi.turn_off.assert_called_once()
+
+    def test_freeze_head_hides_controller_head_commands_from_policy(self):
+        self.walk.freeze_head = True
+        self.walk.num_dofs = 14
+        self.walk.last_commands = numpy.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+        self.walk.imu = types.SimpleNamespace(
+            get_data=Mock(
+                return_value={"gyro": numpy.zeros(3), "accelero": numpy.zeros(3)}
+            )
+        )
+        self.walk.init_pos = numpy.zeros(14)
+        self.walk.last_action = numpy.zeros(14)
+        self.walk.last_last_action = numpy.zeros(14)
+        self.walk.last_last_last_action = numpy.zeros(14)
+        self.walk.motor_targets = numpy.zeros(14)
+        self.walk.imitation_phase = numpy.zeros(2)
+        self.walk.feet_contacts.get = Mock(return_value=[False, False])
+
+        obs = self.walk.get_obs()
+
+        numpy.testing.assert_array_equal(
+            obs[6:13], [0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.0]
+        )
+        numpy.testing.assert_array_equal(
+            self.walk.last_commands, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

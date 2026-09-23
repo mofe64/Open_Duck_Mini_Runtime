@@ -175,6 +175,10 @@ Download the [latest policy checkpoint ](https://github.com/apirrone/Open_Duck_M
 
 `python v2_rl_walk_mujoco.py --onnx_model_path <path_to>/BEST_WALK_ONNX_2.onnx`
 
+To hold the neck and head still during the walk, add `--freeze-head`. Startup
+still moves all joints to the walking start pose; the four head servos then hold
+that pose with torque enabled.
+
 
 
 ```

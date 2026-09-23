@@ -36,11 +36,13 @@ class RLWalk:
         save_obs=False,
         replay_obs=None,
         cutoff_frequency=None,
+        freeze_head=False,
     ):
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
 
         self.commands = commands
+        self.freeze_head = freeze_head
         self.pitch_bias = pitch_bias
 
         self.onnx_model_path = onnx_model_path
@@ -154,7 +156,9 @@ class RLWalk:
             print(f"ERROR len(dof_vel) != {self.num_dofs}")
             return None
 
-        cmds = self.last_commands
+        cmds = np.array(self.last_commands, copy=True)
+        if self.freeze_head:
+            cmds[3:] = 0.0
 
         feet_contacts = self.feet_contacts.get()
 
@@ -288,6 +292,10 @@ class RLWalk:
                         break
 
                 action = self.policy.infer(obs)
+                if self.freeze_head:
+                    # Keep the action history consistent with what we send to the motors.
+                    action = action.copy()
+                    action[5:9] = 0.0
 
                 self.last_last_last_action = self.last_last_action.copy()
                 self.last_last_action = self.last_action.copy()
@@ -315,8 +323,10 @@ class RLWalk:
 
                 self.prev_motor_targets = self.motor_targets.copy()
 
-                head_motor_targets = self.last_commands[3:] + self.motor_targets[5:9]
-                self.motor_targets[5:9] = head_motor_targets
+                if self.freeze_head:
+                    self.motor_targets[5:9] = self.init_pos[5:9]
+                else:
+                    self.motor_targets[5:9] += self.last_commands[3:]
 
                 action_dict = make_action_dict(
                     self.motor_targets, list(self.hwi.joints.keys())
@@ -405,6 +415,11 @@ if __name__ == "__main__":
         help="replay the observations from a previous run (can be from the robot or from mujoco)",
     )
     parser.add_argument("--cutoff_frequency", type=float, default=None)
+    parser.add_argument(
+        "--freeze-head",
+        action="store_true",
+        help="Hold the neck and head at the walking start pose during the walk",
+    )
 
     args = parser.parse_args()
     pid = [args.p, args.i, args.d]
@@ -421,6 +436,7 @@ if __name__ == "__main__":
         save_obs=args.save_obs,
         replay_obs=args.replay_obs,
         cutoff_frequency=args.cutoff_frequency,
+        freeze_head=args.freeze_head,
     )
     print("Done instantiating RLWalk")
     rl_walk.run()
