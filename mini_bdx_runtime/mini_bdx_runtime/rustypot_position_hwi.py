@@ -101,7 +101,7 @@ class HWI:
         self.io.set_kps(list(self.joints.values()), self.kps)
         print("turn on : high kps")
 
-    def turn_on_smooth(self, final_kps, ramp_seconds=20.0):
+    def turn_on_smooth(self, final_kps, ramp_seconds=20.0, gain_step_seconds=2.0):
         """Move to the walking start pose before raising motor gains."""
         names = list(self.joints)
         ids = list(self.joints.values())
@@ -155,7 +155,7 @@ class HWI:
                     for kp in self.kps
                 ]
                 self.io.set_kps(ids, gains)
-                time.sleep(2)
+                time.sleep(gain_step_seconds)
                 check_position(1, 0.15)
         except BaseException:
             self.turn_off()

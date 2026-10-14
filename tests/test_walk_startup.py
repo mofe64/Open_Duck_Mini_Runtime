@@ -147,6 +147,8 @@ class WalkShutdownTests(unittest.TestCase):
         self.walk.commands = False
         self.walk.save_obs = False
         self.walk.control_freq = 50
+        self.walk.fall_detection = False
+        self.walk.fallen = False
 
     def test_ctrl_c_releases_motor_torque(self):
         self.walk.paused = True
@@ -257,6 +259,122 @@ class WalkShutdownTests(unittest.TestCase):
         numpy.testing.assert_array_equal(
             self.walk.last_commands, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
         )
+
+
+class FallDetectionTests(unittest.TestCase):
+    def setUp(self):
+        self.module = load_walk_module()
+        self.walk = self.module.RLWalk.__new__(self.module.RLWalk)
+        self.accelero = numpy.array([0.0, 0.0, -9.8])
+        self.walk.imu = types.SimpleNamespace(
+            get_data=lambda: {"gyro": numpy.zeros(3), "accelero": self.accelero}
+        )
+        self.walk.upright_gravity = numpy.array([0.0, 0.0, -1.0])
+        self.walk.fall_detection = True
+        self.walk.fall_tilt_deg = 45.0
+        self.walk.fall_time = 0.2
+        self.walk.recover_tilt_deg = 20.0
+        self.walk.recover_ramp_seconds = 3.0
+        self.walk.fallen = False
+        self.walk.tilted_since = None
+        self.walk.commands = True
+        self.walk.duck_config = types.SimpleNamespace(
+            speaker=False, antennas=False, eyes=False, projector=False
+        )
+        self.walk.hwi = types.SimpleNamespace(turn_off=Mock(), turn_on_smooth=Mock())
+        self.walk.walk_kps = [30] * 14
+        self.walk.num_dofs = 14
+        self.walk.init_pos = list(numpy.arange(14, dtype=float))
+        self.walk.action_filter = None
+        self.walk.control_freq = 50
+        self.walk.paused = True
+
+    def tip_over(self, degrees):
+        angle = numpy.radians(degrees)
+        self.accelero = 9.8 * numpy.array([numpy.sin(angle), 0.0, -numpy.cos(angle)])
+
+    def test_upright_is_zero_tilt(self):
+        self.assertAlmostEqual(self.walk.get_tilt_deg(), 0.0)
+
+    def test_brief_tilt_is_ignored(self):
+        self.tip_over(80)
+        self.assertFalse(self.walk.check_fall(10.0))
+        self.assertFalse(self.walk.check_fall(10.1))
+        self.tip_over(5)
+        self.assertFalse(self.walk.check_fall(10.15))
+        self.tip_over(80)
+        self.assertFalse(self.walk.check_fall(10.3))
+
+    def test_sustained_tilt_is_a_fall(self):
+        self.tip_over(60)
+        self.assertFalse(self.walk.check_fall(10.0))
+        self.assertTrue(self.walk.check_fall(10.25))
+
+    def test_small_tilt_never_triggers(self):
+        self.tip_over(30)
+        for step in range(100):
+            self.assertFalse(self.walk.check_fall(step * 0.02))
+
+    def test_fall_cuts_torque(self):
+        self.walk.handle_fall()
+        self.walk.hwi.turn_off.assert_called_once()
+        self.assertTrue(self.walk.fallen)
+
+    def test_recover_refused_while_still_tilted(self):
+        self.walk.fallen = True
+        self.tip_over(50)
+        self.walk.try_recover()
+        self.walk.hwi.turn_on_smooth.assert_not_called()
+        self.assertTrue(self.walk.fallen)
+
+    def test_recover_ramps_back_and_resets_policy_state(self):
+        self.walk.fallen = True
+        self.walk.last_action = numpy.ones(14)
+        self.walk.imitation_i = 37
+        self.tip_over(10)
+        self.walk.try_recover()
+        self.walk.hwi.turn_on_smooth.assert_called_once()
+        self.assertEqual(
+            self.walk.hwi.turn_on_smooth.call_args.kwargs["ramp_seconds"], 3.0
+        )
+        self.assertFalse(self.walk.fallen)
+        self.assertFalse(self.walk.paused)
+        numpy.testing.assert_array_equal(self.walk.last_action, numpy.zeros(14))
+        numpy.testing.assert_array_equal(self.walk.motor_targets, self.walk.init_pos)
+        self.assertEqual(self.walk.imitation_i, 0)
+
+    def test_failed_recovery_stays_fallen(self):
+        self.walk.fallen = True
+        self.walk.hwi.turn_on_smooth.side_effect = RuntimeError("left_knee is not following")
+        self.walk.try_recover()
+        self.assertTrue(self.walk.fallen)
+
+    def test_run_loop_stops_commanding_motors_after_fall(self):
+        self.walk.paused = False
+        self.walk.commands = False
+        self.walk.save_obs = False
+        self.walk.feet_contacts = types.SimpleNamespace(stop=Mock())
+        self.walk.get_obs = Mock(return_value=numpy.zeros(100))
+        self.walk.hwi.set_position_all = Mock()
+        self.tip_over(90)
+        self.walk.tilted_since = -1.0  # already tilted for a second
+        clock = iter(numpy.arange(0, 100, 0.05))
+        sleeps = []
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) > 20:
+                raise KeyboardInterrupt
+
+        with patch.object(self.module.time, "time", side_effect=lambda: next(clock)):
+            with patch.object(self.module.time, "sleep", side_effect=fake_sleep):
+                self.walk.run()
+
+        self.assertTrue(self.walk.fallen)
+        self.walk.get_obs.assert_not_called()
+        self.walk.hwi.set_position_all.assert_not_called()
+        # Once when the fall is detected, once more on exit.
+        self.assertEqual(self.walk.hwi.turn_off.call_count, 2)
 
 
 if __name__ == "__main__":

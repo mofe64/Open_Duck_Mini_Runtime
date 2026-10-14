@@ -37,6 +37,11 @@ class RLWalk:
         replay_obs=None,
         cutoff_frequency=None,
         freeze_head=False,
+        fall_detection=True,
+        fall_tilt_deg=45.0,
+        fall_time=0.2,
+        recover_tilt_deg=20.0,
+        recover_ramp_seconds=3.0,
     ):
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
@@ -64,6 +69,7 @@ class RLWalk:
             self.replay_obs = pickle.load(open(self.replay_obs, "rb"))
 
         self.action_filter = None
+        self.action_filter_cutoff = cutoff_frequency
         if cutoff_frequency is not None:
             self.action_filter = LowPassActionFilter(
                 self.control_freq, cutoff_frequency
@@ -95,6 +101,17 @@ class RLWalk:
 
         self.paused = self.duck_config.start_paused
 
+        # Fall detection: compare the measured gravity direction with the one
+        # recorded while standing, and cut torque if the duck stays tilted.
+        self.fall_detection = fall_detection
+        self.fall_tilt_deg = fall_tilt_deg
+        self.fall_time = fall_time
+        self.recover_tilt_deg = recover_tilt_deg
+        self.recover_ramp_seconds = recover_ramp_seconds
+        self.fallen = False
+        self.tilted_since = None
+        self.upright_gravity = None
+
         self.command_freq = 20  # hz
         if self.commands:
             self.xbox_controller = XBoxController(self.command_freq)
@@ -123,6 +140,8 @@ class RLWalk:
 
         # Complete sensor and controller setup before enabling the motors.
         self.start()
+        if self.fall_detection:
+            self.upright_gravity = self.capture_upright_gravity()
 
     def get_obs(self):
 
@@ -186,9 +205,96 @@ class RLWalk:
 
         # lower head kps
         kps[5:9] = [8, 8, 8, 8]
+        self.walk_kps = kps
 
         self.hwi.set_kds(kds)
         self.hwi.turn_on_smooth(kps)
+
+    def capture_upright_gravity(self, seconds=0.5):
+        """Average the accelerometer while standing to get the upright reference."""
+        samples = []
+        end = time.time() + seconds
+        while time.time() < end:
+            accelero = np.asarray(self.imu.get_data()["accelero"], dtype=float)
+            if np.linalg.norm(accelero) > 5:  # skip empty or garbage readings
+                samples.append(accelero)
+            time.sleep(1 / self.control_freq)
+        if not samples:
+            raise RuntimeError("No IMU accelerometer data; cannot set up fall detection")
+        mean = np.mean(samples, axis=0)
+        print(f"Fall detection: upright gravity reference {np.around(mean, 2)}")
+        return mean / np.linalg.norm(mean)
+
+    def get_tilt_deg(self):
+        """Angle between the current gravity direction and the upright one."""
+        accelero = np.asarray(self.imu.get_data()["accelero"], dtype=float)
+        norm = np.linalg.norm(accelero)
+        if norm < 1e-6:
+            return None
+        cos = np.dot(accelero / norm, self.upright_gravity)
+        return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
+
+    def check_fall(self, t):
+        """True once the tilt has stayed above the limit for fall_time seconds."""
+        tilt = self.get_tilt_deg()
+        if tilt is None or tilt < self.fall_tilt_deg:
+            self.tilted_since = None
+            return False
+        if self.tilted_since is None:
+            self.tilted_since = t
+        if t - self.tilted_since >= self.fall_time:
+            print(f"FALL DETECTED (tilt {tilt:.0f} deg): motor torque off.")
+            if self.commands:
+                print("Stand the duck up and press A to resume walking.")
+            else:
+                print("No controller: stop the script and restart it.")
+            return True
+        return False
+
+    def handle_fall(self):
+        self.hwi.turn_off()
+        self.fallen = True
+        self.tilted_since = None
+        if self.duck_config.speaker:
+            self.sounds.play_random_sound()
+
+    def try_recover(self):
+        """Ease back into the standing pose after the duck was stood up by hand."""
+        tilt = self.get_tilt_deg()
+        if tilt is None or tilt > self.recover_tilt_deg:
+            shown = "unknown" if tilt is None else f"{tilt:.0f}"
+            print(
+                f"Still tilted ({shown} deg, limit {self.recover_tilt_deg:.0f}); "
+                "stand the duck upright and press A again."
+            )
+            return
+        print("Recovering: easing joints back to the standing pose")
+        try:
+            self.hwi.turn_on_smooth(
+                self.walk_kps,
+                ramp_seconds=self.recover_ramp_seconds,
+                gain_step_seconds=0.5,
+            )
+        except RuntimeError as exc:
+            # turn_on_smooth has already switched torque off.
+            print(f"Recovery failed ({exc}); torque is off. Press A to try again.")
+            return
+
+        # Start the policy from a clean state, as at the beginning of a walk.
+        self.last_action = np.zeros(self.num_dofs)
+        self.last_last_action = np.zeros(self.num_dofs)
+        self.last_last_last_action = np.zeros(self.num_dofs)
+        self.motor_targets = np.array(self.init_pos.copy())
+        self.prev_motor_targets = np.array(self.init_pos.copy())
+        self.imitation_i = 0
+        if self.action_filter is not None:
+            self.action_filter = LowPassActionFilter(
+                self.control_freq, self.action_filter_cutoff
+            )
+        self.walk_start_t = time.time()
+        self.fallen = False
+        self.paused = False
+        print("Recovered: walking")
 
     def get_phase_frequency_factor(self, x_velocity):
 
@@ -208,7 +314,7 @@ class RLWalk:
         run_failed = False
         try:
             print("Starting")
-            start_t = time.time()
+            self.walk_start_t = time.time()
             while True:
                 left_trigger = 0
                 right_trigger = 0
@@ -248,11 +354,21 @@ class RLWalk:
                         self.antennas.set_position_right(left_trigger)
 
                     if self.buttons.A.triggered:
-                        self.paused = not self.paused
-                        if self.paused:
-                            print("PAUSE")
+                        if self.fallen:
+                            self.try_recover()
                         else:
-                            print("UNPAUSE")
+                            self.paused = not self.paused
+                            if self.paused:
+                                print("PAUSE")
+                            else:
+                                print("UNPAUSE")
+
+                if self.fall_detection and not self.fallen and self.check_fall(t):
+                    self.handle_fall()
+
+                if self.fallen:
+                    time.sleep(0.1)
+                    continue
 
                 if self.paused:
                     if t - last_paused_feedback_check >= 1:
@@ -317,7 +433,7 @@ class RLWalk:
                     self.action_filter.push(self.motor_targets)
                     filtered_motor_targets = self.action_filter.get_filtered_action()
                     if (
-                        time.time() - start_t > 1
+                        time.time() - self.walk_start_t > 1
                     ):  # give time to the filter to stabilize
                         self.motor_targets = filtered_motor_targets
 
@@ -421,6 +537,24 @@ if __name__ == "__main__":
         help="Hold the neck and head at the walking start pose during the walk",
     )
 
+    parser.add_argument(
+        "--no-fall-detection",
+        action="store_true",
+        help="Keep walking even when the duck has fallen over",
+    )
+    parser.add_argument(
+        "--fall-tilt-deg",
+        type=float,
+        default=45.0,
+        help="Tilt from upright, in degrees, that counts as a fall",
+    )
+    parser.add_argument(
+        "--fall-time",
+        type=float,
+        default=0.2,
+        help="Seconds the tilt must last before torque is cut",
+    )
+
     args = parser.parse_args()
     pid = [args.p, args.i, args.d]
 
@@ -437,6 +571,9 @@ if __name__ == "__main__":
         replay_obs=args.replay_obs,
         cutoff_frequency=args.cutoff_frequency,
         freeze_head=args.freeze_head,
+        fall_detection=not args.no_fall_detection,
+        fall_tilt_deg=args.fall_tilt_deg,
+        fall_time=args.fall_time,
     )
     print("Done instantiating RLWalk")
     rl_walk.run()

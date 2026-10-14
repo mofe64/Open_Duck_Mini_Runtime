@@ -45,16 +45,31 @@ But: No worries, we've got you covered. These are two additional ways to connect
 - If the Duck fails to connect to any WiFi, it will open up its own WiFi called "Openduck"
 - You can connect your Laptop or Desktop directly to this network and then access the Duck via SSH
 - Note: This feature is always enabled, so if you take your Duck out on the road or show, this allows you to connect to it anytime
-- To disable this feature, enter the command: sudo systemctl disable openduck-wifi-fallback.service
+- Join `Openduck` from your laptop and connect with `ssh USER@10.42.0.1`, replacing `USER` with the Pi's username
 
-> If you wish to permanently use this feature, please ensure to change the password for the hotspot, so you don't get "Duck-napped"
-> Please be aware that start-up time will get about 15-20 seconds longer with this feature active!
-> Please be aware that this feature will sometimes auto-activate only starting from the second reboot after flashing, simply cycle power once if the access point does not come up!
+> This fork sets up the fallback with a timer, as described in [RELEASE_GUIDE.md](RELEASE_GUIDE.md#5-wi-fi-openduck-fallback). The prebuilt image still uses the older boot-time service. Check which one your Duck has with `systemctl list-timers openduck-wifi-fallback.timer`.
 
-``` sudo nmcli connection modify Openduck wifi-sec.psk "NEWstrongPASS123"
+**With the timer (this fork's setup):**
+
+- Boot is not delayed. The hotspot appears about 45–70 seconds after power-on if no Wi-Fi is connected.
+- Once the hotspot is on, the Duck stays on it until you reconnect home Wi-Fi with `sudo nmcli connection up 'YOUR_WIFI_PROFILE_NAME' ifname wlan0`.
+- To disable it: `sudo systemctl disable --now openduck-wifi-fallback.timer`
+
+**With the prebuilt image's service:**
+
+- Start-up takes about 15–20 seconds longer.
+- The access point sometimes only comes up from the second boot after flashing. Cycle power once if it does not appear.
+- To disable it: `sudo systemctl disable openduck-wifi-fallback.service`
+
+> If you use this feature, change the hotspot password so you don't get "Duck-napped":
+
+```bash
+sudo nmcli connection modify Openduck wifi-sec.psk "NEWstrongPASS123"
 sudo nmcli connection down Openduck || true
 sudo nmcli connection up Openduck
 ```
+
+> Running `down` and `up` while you're connected through the hotspot ends your SSH session. Reconnect with the new password.
 
 ### 2.2 - Backup mode - Using your Phones tethering mode
 
