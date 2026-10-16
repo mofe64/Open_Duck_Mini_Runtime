@@ -42,7 +42,28 @@ class RLWalk:
         fall_time=0.2,
         recover_tilt_deg=20.0,
         recover_ramp_seconds=3.0,
+        autonomy=False,
+        autonomy_bind="::",
+        autonomy_port=5602,
+        autonomy_forward_cap=0.10,
+        autonomy_sideways_cap=0.05,
+        autonomy_turn_cap=0.6,
     ):
+
+        self.autonomy_enabled = autonomy
+        self.autonomy_head_frozen = False
+        if autonomy:
+            if not commands or not fall_detection or replay_obs is not None:
+                raise ValueError("Autonomy needs the controller and fall detection. Do not use observation replay.")
+            caps = (autonomy_forward_cap, autonomy_sideways_cap, autonomy_turn_cap)
+            if not all(np.isfinite(cap) and cap >= 0 for cap in caps):
+                raise ValueError("Autonomy speed caps must be finite and non-negative.")
+            if not 1 <= autonomy_port <= 65535:
+                raise ValueError("Autonomy port is not valid.")
+            if not np.isfinite(control_freq) or control_freq <= 2:
+                raise ValueError("Autonomy needs more than two control steps per second.")
+            if not freeze_head:
+                print("WARNING: --freeze-head is off. Auto holds the last head pose. Manual mode can move the head.", flush=True)
 
         self.duck_config = DuckConfig(config_json_path=duck_config_path)
 
@@ -114,7 +135,10 @@ class RLWalk:
 
         self.command_freq = 20  # hz
         if self.commands:
-            self.xbox_controller = XBoxController(self.command_freq)
+            if self.autonomy_enabled:
+                self.xbox_controller = XBoxController(self.command_freq, track_sticks=True)
+            else:
+                self.xbox_controller = XBoxController(self.command_freq)
 
         # Reference motion, but we only really need the length of one phase
         # TODO
@@ -139,9 +163,66 @@ class RLWalk:
             self.antennas = Antennas()
 
         # Complete sensor and controller setup before enabling the motors.
-        self.start()
-        if self.fall_detection:
-            self.upright_gravity = self.capture_upright_gravity()
+        if self.autonomy_enabled:
+            self.configure_autonomy(autonomy_bind, autonomy_port, *caps)
+        try:
+            self.start()
+            if self.fall_detection:
+                self.upright_gravity = self.capture_upright_gravity()
+            if self.autonomy_enabled:
+                self.autonomy_link.discard_waiting()
+                self.autonomy_safety.expire_commands()
+        except BaseException:
+            if self.autonomy_enabled:
+                try:
+                    self.hwi.turn_off()
+                finally:
+                    self.autonomy_link.close()
+            raise
+
+    def configure_autonomy(self, bind, port, forward_cap, sideways_cap, turn_cap):
+        """Load the optional command link before enabling motor torque."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from autonomy.command_link import CommandLink
+        from autonomy.safety import SafetyControl
+
+        self.autonomy_safety = SafetyControl(forward_cap, sideways_cap, turn_cap,
+                                            control_period=1 / self.control_freq)
+        self.autonomy_link = CommandLink(bind, port)
+
+    def update_autonomy(self):
+        """Select walking speeds before the policy reads them."""
+        now = time.monotonic()
+        self.autonomy_link.poll(self.autonomy_safety, now)
+        decision = self.autonomy_safety.step(
+            now, manual=tuple(self.last_commands[:3]),
+            sticks=self.xbox_controller.get_stick_axes(),
+            rb=self.buttons.RB.triggered, a=self.buttons.A.triggered,
+            paused=self.paused, fallen=self.fallen,
+            link_ok=self.autonomy_link.healthy,
+        )
+        # Copy the command array so the controller keeps its manual values.
+        self.last_commands = np.array(self.last_commands, dtype=float, copy=True)
+        self.last_commands[:3] = decision.applied
+        self.autonomy_head_frozen = decision.mode.name == "AUTO"
+        if self.autonomy_head_frozen:
+            self.last_commands[3:] = 0.0
+            if decision.changed:
+                # The final target includes the last manual head offsets.
+                self.autonomy_head_targets = self.motor_targets[5:9].copy()
+        if decision.changed:
+            print(f"Command mode: {decision.mode.name.lower()}; {decision.reason}", flush=True)
+            if self.duck_config.speaker and (decision.previous_mode.name == "AUTO" or self.autonomy_head_frozen):
+                self.sounds.play("beep1.wav", maxtime_ms=150)
+        if decision.notice:
+            print(decision.notice, flush=True)
+        imu_data = self.imu.get_data()
+        self.autonomy_link.send_state(
+            decision.mode, decision.applied, imu_data["gyro"], imu_data["accelero"],
+            decision.reason, now,
+        )
 
     def get_obs(self):
 
@@ -176,7 +257,7 @@ class RLWalk:
             return None
 
         cmds = np.array(self.last_commands, copy=True)
-        if self.freeze_head:
+        if self.freeze_head or getattr(self, "autonomy_head_frozen", False):
             cmds[3:] = 0.0
 
         feet_contacts = self.feet_contacts.get()
@@ -356,6 +437,9 @@ class RLWalk:
                     if self.buttons.A.triggered:
                         if self.fallen:
                             self.try_recover()
+                            if getattr(self, "autonomy_enabled", False):
+                                self.autonomy_link.discard_waiting()
+                                self.autonomy_safety.expire_commands()
                         else:
                             self.paused = not self.paused
                             if self.paused:
@@ -365,6 +449,9 @@ class RLWalk:
 
                 if self.fall_detection and not self.fallen and self.check_fall(t):
                     self.handle_fall()
+
+                if getattr(self, "autonomy_enabled", False):
+                    self.update_autonomy()
 
                 if self.fallen:
                     time.sleep(0.1)
@@ -408,7 +495,7 @@ class RLWalk:
                         break
 
                 action = self.policy.infer(obs)
-                if self.freeze_head:
+                if self.freeze_head or getattr(self, "autonomy_head_frozen", False):
                     # Keep the action history consistent with what we send to the motors.
                     action = action.copy()
                     action[5:9] = 0.0
@@ -441,6 +528,8 @@ class RLWalk:
 
                 if self.freeze_head:
                     self.motor_targets[5:9] = self.init_pos[5:9]
+                elif getattr(self, "autonomy_head_frozen", False):
+                    self.motor_targets[5:9] = self.autonomy_head_targets
                 else:
                     self.motor_targets[5:9] += self.last_commands[3:]
 
@@ -479,6 +568,8 @@ class RLWalk:
                     flush=True,
                 )
             finally:
+                if getattr(self, "autonomy_enabled", False):
+                    self.autonomy_link.close()
                 if self.duck_config.antennas:
                     self.antennas.stop()
                 if self.duck_config.eyes:
@@ -555,6 +646,13 @@ if __name__ == "__main__":
         help="Seconds the tilt must last before torque is cut",
     )
 
+    parser.add_argument("--autonomy", action="store_true", help="Enable Mac commands and the duck safety checks.")
+    parser.add_argument("--autonomy-bind", default="::", help="Listen at this address. Use :: for IPv4 and IPv6.")
+    parser.add_argument("--autonomy-port", type=int, default=5602, help="Use this UDP command port. UDP sends separate network messages.")
+    parser.add_argument("--autonomy-forward-cap", type=float, default=0.10, help="Limit autonomous forward and backward speed in metres per second.")
+    parser.add_argument("--autonomy-sideways-cap", type=float, default=0.05, help="Limit autonomous sideways speed in metres per second.")
+    parser.add_argument("--autonomy-turn-cap", type=float, default=0.6, help="Limit autonomous turning in radians per second.")
+
     args = parser.parse_args()
     pid = [args.p, args.i, args.d]
 
@@ -574,6 +672,12 @@ if __name__ == "__main__":
         fall_detection=not args.no_fall_detection,
         fall_tilt_deg=args.fall_tilt_deg,
         fall_time=args.fall_time,
+        autonomy=args.autonomy,
+        autonomy_bind=args.autonomy_bind,
+        autonomy_port=args.autonomy_port,
+        autonomy_forward_cap=args.autonomy_forward_cap,
+        autonomy_sideways_cap=args.autonomy_sideways_cap,
+        autonomy_turn_cap=args.autonomy_turn_cap,
     )
     print("Done instantiating RLWalk")
     rl_walk.run()

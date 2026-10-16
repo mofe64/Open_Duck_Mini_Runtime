@@ -19,10 +19,12 @@ HEAD_ROLL_RANGE = [-0.5, 0.5]
 
 
 class XBoxController:
-    def __init__(self, command_freq, only_head_control=False):
+    def __init__(self, command_freq, only_head_control=False, track_sticks=False):
         self.command_freq = command_freq
         self.head_control_mode = only_head_control
         self.only_head_control = only_head_control
+        self.track_sticks = track_sticks
+        self.stick_axes = None
 
         self.last_commands = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.last_left_trigger = 0.0
@@ -43,6 +45,9 @@ class XBoxController:
         self.RB_pressed = False
 
         self.buttons = Buttons()
+        if self.track_sticks:
+            # Stable button levels let every A and RB press take effect.
+            self.buttons.A.timeout = self.buttons.RB.timeout = 0.0
 
         Thread(target=self.commands_worker, daemon=True).start()
 
@@ -60,6 +65,10 @@ class XBoxController:
         l_y = -1 * self.p1.get_axis(1)
         r_x = -1 * self.p1.get_axis(2)
         r_y = -1 * self.p1.get_axis(3)
+
+        if self.track_sticks:
+            # Keep raw stick travel even when the sticks control the head.
+            self.stick_axes = (l_x, l_y, r_x, r_y)
 
         right_trigger = np.around((self.p1.get_axis(4) + 1) / 2, 3)
         left_trigger = np.around((self.p1.get_axis(5) + 1) / 2, 3)
@@ -158,6 +167,10 @@ class XBoxController:
         up_down = self.p1.get_hat(0)[1]
         pygame.event.pump()  # process event queue
 
+        if self.track_sticks:
+            self.A_pressed = bool(self.p1.get_button(0))
+            self.RB_pressed = bool(self.p1.get_button(7))
+
         return (
             np.around(last_commands, 3),
             self.A_pressed,
@@ -172,12 +185,12 @@ class XBoxController:
         )
 
     def get_last_command(self):
-        A_pressed = False
+        A_pressed = self.buttons.A.is_pressed if self.track_sticks else False
         B_pressed = False
         X_pressed = False
         Y_pressed = False
         LB_pressed = False
-        RB_pressed = False
+        RB_pressed = self.buttons.RB.is_pressed if self.track_sticks else False
         up_down = 0
         try:
             (
@@ -214,6 +227,10 @@ class XBoxController:
             self.last_left_trigger,
             self.last_right_trigger,
         )
+
+    def get_stick_axes(self):
+        """Return the latest raw stick positions, or None before the first sample."""
+        return self.stick_axes
 
 if __name__ == "__main__":
     controller = XBoxController(20)
