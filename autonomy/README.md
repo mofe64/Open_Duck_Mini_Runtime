@@ -19,9 +19,11 @@ A venv is a separate Python environment.
 Use Python 3.9 or later for these modules.
 Use the existing Python 3.12 environment at `~/tof-venv` on the duck.
 It contains ArducamDepthCamera 0.1.24 and NumPy 1.26.4.
+The Arducam library is code that gives programs access to the camera.
 The Mac viewer uses NumPy 1.26.4 and OpenCV 4.10.0.84.
 OpenCV provides the image window and colours.
 
+The camera format defines the image size and how the camera stores each image point, called a pixel.
 The duck also needs `v4l2-ctl`, a tool that reads and sets camera formats.
 The existing camera setup already contains this tool.
 Keep both devices on the same Wi-Fi network.
@@ -31,11 +33,38 @@ The viewer uses the address returned for the duck host.
 
 ## Prepare the duck
 
-The existing camera test needs a small format helper.
-This folder includes its source in `compat/readonly_format_compat.c`.
-The helper checks the active sensor format after the driver refuses a format change.
-It accepts that error only when the requested and active formats match.
-It applies only to the streamer process.
+### The camera helper
+
+The camera helper is a small file between the Arducam library and the camera.
+The kernel is the part of Linux that controls hardware.
+Kernel 6.18 locks the camera format.
+The Arducam library tries to set that format.
+It gets "permission denied" and stops with `ArducamUnkownError`.
+
+A bit is the smallest unit of digital data.
+The helper catches only this rejected request to set the camera format.
+It checks whether the requested format matches the active format: 240 by 180 pixels, 12-bit.
+If these formats match, the helper answers OK.
+Otherwise, it returns the real error.
+It leaves all other requests and errors unchanged.
+
+Git tracks changes to project files.
+The source file (`.c`) contains the helper's code at `autonomy/compat/readonly_format_compat.c`.
+A build turns this source code into a compiled file (`.so`) that the camera program can load.
+A processor is the chip that runs programs.
+The `.so` file works with only one type of processor.
+The Pi is the Raspberry Pi computer in the duck.
+We build the `.so` file on the Pi.
+Git stores only the `.c` file and ignores the `.so` file.
+GitHub stores the shared Git project.
+A pull gets saved changes from GitHub into the local project.
+Later Git pulls do not remove the `.so` file.
+
+The helper needs one build on each new Pi or fresh SD card, the Pi's storage card.
+A change to the `.c` file also requires a new build.
+Other updates do not require a new build.
+
+The helper applies only to the depth streamer, the program that sends camera images to the Mac.
 The streamer restores the previous video format when it exits.
 
 1. Connect to the duck.
@@ -50,7 +79,7 @@ The streamer restores the previous video format when it exits.
    cd ~/Open_Duck_Mini_Runtime
    ```
 
-3. Build the format helper.
+3. Build the helper on the Pi when one of these conditions applies.
 
    ```sh
    cc -shared -fPIC -O2 -Wall -Wextra -o autonomy/compat/readonly_format_compat.so autonomy/compat/readonly_format_compat.c -ldl -pthread
@@ -69,29 +98,34 @@ Leave the streamer running for the Mac procedure.
 
 ## Prepare the Mac
 
-Use the Mac runtime copy when this folder already exists there.
-Use the copy procedure below when the files exist only on the duck.
-Run these commands from the Mac runtime folder.
+The Mac and duck use the same Git project.
+The [Git update steps](#keep-the-duck-up-to-date) keep their files current.
 
-1. Create the viewer environment.
+1. Open the runtime folder on the Mac.
+
+   ```sh
+   cd /Users/mofe/dev/openduck/Open_Duck_Mini_Runtime
+   ```
+
+2. Create the viewer environment.
 
    ```sh
    python3.12 -m venv autonomy/.venv
    ```
 
-2. Install the viewer packages.
+3. Install the viewer packages.
 
    ```sh
    autonomy/.venv/bin/python -m pip install -r autonomy/requirements-mac.txt
    ```
 
-3. Start the viewer.
+4. Start the viewer.
 
    ```sh
    autonomy/.venv/bin/python -m autonomy.mac_depth_viewer
    ```
 
-4. Press Q to close the viewer.
+5. Press Q to close the viewer.
 
 The window shows three vertical zones: left, centre, and right.
 Each zone shows its 10th percentile distance from valid reduced pixels.
@@ -107,29 +141,80 @@ The count excludes time before the first frame and long connection gaps.
 The window removes depth readings after one second without a new frame.
 The Pi time records frame receipt with a clock that counts seconds since boot.
 
-## Copy files from the duck
+## Keep the duck up to date
 
-Run these steps on the Mac.
+GitHub is the one source of truth for project files.
+The project is [mofe64/Open_Duck_Mini_Runtime](https://github.com/mofe64/Open_Duck_Mini_Runtime).
+A branch is a named line of changes in Git.
+Both the Mac and duck use branch `v2`.
+We no longer copy project files by hand.
+A commit records a set of file changes in Git.
+A push sends commits to GitHub.
+`origin` is the Git name for this project's GitHub address.
+The `--ff-only` option prevents Git from combining separate lines of changes.
 
-1. Create a destination folder.
-
-   ```sh
-   mkdir -p ~/duck-depth
-   ```
-
-2. Copy the viewer and shared modules.
-
-   ```sh
-   scp -r mofe@bdxmini.local:~/Open_Duck_Mini_Runtime/autonomy ~/duck-depth/
-   ```
-
-3. Open the destination folder.
+1. Open the runtime folder on the Mac.
 
    ```sh
-   cd ~/duck-depth
+   cd /Users/mofe/dev/openduck/Open_Duck_Mini_Runtime
    ```
 
-4. Follow the Mac procedure above.
+2. Select branch `v2` on the Mac.
+
+   ```sh
+   git switch v2
+   ```
+
+3. Check the changed files on the Mac.
+
+   ```sh
+   git status
+   ```
+
+   All listed changes must belong in this update.
+
+4. Select these changes for the commit.
+
+   ```sh
+   git add --all
+   ```
+
+5. Commit the changes on the Mac.
+
+   ```sh
+   git commit -m "Update duck files"
+   ```
+
+6. Push the commit to GitHub.
+
+   ```sh
+   git push origin v2
+   ```
+
+7. Connect to the duck from the Mac.
+
+   ```sh
+   ssh mofe@bdxmini.local
+   ```
+
+8. Get the updates on the duck.
+
+   ```sh
+   cd ~/Open_Duck_Mini_Runtime && git pull --ff-only
+   ```
+
+If the pull refuses:
+
+1. Check the local files and branch on the Pi.
+
+   ```sh
+   git status
+   ```
+
+2. Review the reported problem before another pull.
+3. Do not edit files directly on the Pi.
+
+All project file edits belong on the Mac.
 
 ## Options
 
