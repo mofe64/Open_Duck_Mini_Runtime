@@ -48,8 +48,39 @@ class RLWalk:
         autonomy_forward_cap=0.10,
         autonomy_sideways_cap=0.05,
         autonomy_turn_cap=0.6,
+        accel_offset=(0, 0, 0),
+        stand_when_idle=False,
+        idle_linear_deadband=0.01,
+        idle_turn_deadband=0.05,
+        idle_delay=0.5,
+        idle_ramp_time=0.5,
+        idle_contact_wait=1.0,
     ):
+        offset = np.asarray(accel_offset, dtype=float)
+        if offset.shape != (3,) or not np.all(np.isfinite(offset)):
+            raise ValueError("Acceleration offsets must contain three finite values.")
+        for value in (idle_linear_deadband, idle_turn_deadband, idle_delay, idle_contact_wait):
+            if not np.isfinite(value) or value < 0:
+                raise ValueError("Idle limits and wait times must be finite and at least zero.")
+        if not np.isfinite(idle_ramp_time) or idle_ramp_time <= 0:
+            raise ValueError("The idle move time must be finite and greater than zero.")
+        if stand_when_idle and replay_obs is not None:
+            raise ValueError("Idle standing cannot use saved policy inputs.")
+        if stand_when_idle and (not np.isfinite(control_freq) or control_freq <= 0):
+            raise ValueError("Idle standing needs a control rate greater than zero.")
+        if pitch_bias != 0:
+            print("WARNING: --pitch_bias has no effect with the raw IMU. Use --accel-offset X Y Z.", flush=True)
 
+        self.stand_when_idle = stand_when_idle
+        self.idle_linear_deadband = idle_linear_deadband
+        self.idle_turn_deadband = idle_turn_deadband
+        self.idle_delay = idle_delay
+        self.idle_ramp_time = idle_ramp_time
+        self.idle_contact_wait = idle_contact_wait
+        self.idle_state = "walking"
+        self.idle_zero_since = None
+        self.idle_last_t = None
+        self.idle_contact_lost_since = None
         self.autonomy_enabled = autonomy
         self.autonomy_head_frozen = False
         if autonomy:
@@ -102,6 +133,7 @@ class RLWalk:
             sampling_freq=int(self.control_freq),
             user_pitch_bias=self.pitch_bias,
             upside_down=self.duck_config.imu_upside_down,
+            accel_offset=accel_offset,
         )
 
         self.feet_contacts = FeetContacts()
@@ -260,7 +292,12 @@ class RLWalk:
         if self.freeze_head or getattr(self, "autonomy_head_frozen", False):
             cmds[3:] = 0.0
 
-        feet_contacts = self.feet_contacts.get()
+        if getattr(self, "stand_when_idle", False):
+            feet_contacts = self.read_idle_contacts()
+            if feet_contacts is None:
+                feet_contacts = [False, False]
+        else:
+            feet_contacts = self.feet_contacts.get()
 
         obs = np.concatenate(
             [
@@ -361,7 +398,13 @@ class RLWalk:
             print(f"Recovery failed ({exc}); torque is off. Press A to try again.")
             return
 
-        # Start the policy from a clean state, as at the beginning of a walk.
+        self.reset_walk_state()
+        self.fallen = False
+        self.paused = False
+        print("Recovered: walking")
+
+    def reset_walk_state(self):
+        """Clear saved actions and targets before walking starts again."""
         self.last_action = np.zeros(self.num_dofs)
         self.last_last_action = np.zeros(self.num_dofs)
         self.last_last_last_action = np.zeros(self.num_dofs)
@@ -373,9 +416,90 @@ class RLWalk:
                 self.control_freq, self.action_filter_cutoff
             )
         self.walk_start_t = time.time()
-        self.fallen = False
-        self.paused = False
-        print("Recovered: walking")
+        if getattr(self, "stand_when_idle", False):
+            self.imitation_phase = np.zeros(2)
+        self.idle_state = "walking"
+        self.idle_zero_since = None
+        self.idle_last_t = None
+        self.idle_contact_lost_since = None
+
+    def read_idle_contacts(self):
+        """Read both foot switches. Return None if their data is unavailable."""
+        try:
+            contacts = np.asarray(self.feet_contacts.get())
+            if contacts.shape == (2,) and np.all(np.isin(contacts, [False, True])):
+                return contacts.astype(bool)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+        return None
+
+    def update_idle(self, now):
+        """Stop policy calls after a zero command. Keep safety checks in the main loop."""
+        speeds = np.asarray(self.last_commands[:3])
+        limits = [self.idle_linear_deadband, self.idle_linear_deadband, self.idle_turn_deadband]
+        zero = np.all(np.isfinite(speeds)) and np.all(np.abs(speeds) <= limits)
+        if not zero:
+            self.idle_zero_since = None
+            if self.idle_state != "walking":
+                self.reset_walk_state()
+                print("Walking: the policy has a fresh state.", flush=True)
+            return False
+
+        contacts = self.read_idle_contacts()
+        both_feet = contacts is not None and bool(np.all(contacts))
+        if self.idle_state == "walking":
+            if self.idle_zero_since is None:
+                self.idle_zero_since = now
+            zero_time = now - self.idle_zero_since
+            if zero_time < self.idle_delay:
+                return False
+            if not both_feet and zero_time - self.idle_delay < self.idle_contact_wait:
+                return False
+            self.idle_state = "moving"
+            self.idle_start_targets = self.motor_targets.copy()
+            self.idle_ramp_elapsed = 0.0
+            self.idle_last_t = now
+            self.idle_use_contacts = both_feet
+            self.idle_contact_lost_since = None
+            detail = "both feet touch the ground" if both_feet else "the foot contact wait has expired"
+            print(f"Idle: move to the standing pose; {detail}.", flush=True)
+
+        elapsed = 0.0 if self.idle_last_t is None else max(0.0, now - self.idle_last_t)
+        self.idle_last_t = now
+        standing_targets = np.array(self.init_pos, dtype=float)
+        if self.freeze_head:
+            standing_targets[5:9] = self.init_pos[5:9]
+        elif self.autonomy_head_frozen:
+            standing_targets[5:9] = self.autonomy_head_targets
+        else:
+            standing_targets[5:9] += self.last_commands[3:]
+
+        if self.idle_state == "moving":
+            if self.idle_use_contacts:
+                if both_feet:
+                    self.idle_contact_lost_since = None
+                else:
+                    if self.idle_contact_lost_since is None:
+                        self.idle_contact_lost_since = now
+                    elapsed = 0.0
+                    if now - self.idle_contact_lost_since >= self.idle_contact_wait:
+                        self.idle_use_contacts = False
+            self.idle_ramp_elapsed += elapsed
+            fraction = min(1.0, self.idle_ramp_elapsed / self.idle_ramp_time)
+            # This curve starts and ends the move with zero target speed.
+            weight = fraction * fraction * (3 - 2 * fraction)
+            self.motor_targets = self.idle_start_targets + weight * (standing_targets - self.idle_start_targets)
+            if fraction >= 1.0:
+                self.idle_state = "standing"
+        else:
+            self.motor_targets = standing_targets
+
+        if self.freeze_head:
+            self.motor_targets[5:9] = self.init_pos[5:9]
+        elif self.autonomy_head_frozen:
+            self.motor_targets[5:9] = self.autonomy_head_targets
+        self.prev_motor_targets = self.motor_targets.copy()
+        return True
 
     def get_phase_frequency_factor(self, x_velocity):
 
@@ -453,6 +577,11 @@ class RLWalk:
                 if getattr(self, "autonomy_enabled", False):
                     self.update_autonomy()
 
+                if getattr(self, "stand_when_idle", False) and (self.fallen or self.paused):
+                    self.idle_zero_since = None
+                    self.idle_last_t = None
+                    self.idle_contact_lost_since = None
+
                 if self.fallen:
                     time.sleep(0.1)
                     continue
@@ -465,9 +594,17 @@ class RLWalk:
                     time.sleep(0.1)
                     continue
 
+                idle = (self.update_idle(time.monotonic())
+                        if getattr(self, "stand_when_idle", False) else False)
                 obs = self.get_obs()
                 if obs is None:
                     raise RuntimeError("Motor feedback lost; stopping walk")
+
+                if idle:
+                    self.hwi.set_position_all(make_action_dict(
+                        self.motor_targets, list(self.hwi.joints.keys())))
+                    time.sleep(max(0, 1 / self.control_freq - (time.time() - t)))
+                    continue
 
                 self.imitation_i += 1 * (
                     self.phase_frequency_factor + self.phase_frequency_factor_offset
@@ -600,7 +737,22 @@ if __name__ == "__main__":
     parser.add_argument("-i", type=int, default=0)
     parser.add_argument("-d", type=int, default=0)
     parser.add_argument("-c", "--control_freq", type=int, default=50)
-    parser.add_argument("--pitch_bias", type=float, default=0, help="deg")
+    parser.add_argument("--pitch_bias", type=float, default=0,
+                        help="This setting has no effect with the raw IMU. IMU means motion sensor.")
+    parser.add_argument("--accel-offset", type=float, nargs=3, metavar=("X", "Y", "Z"), default=(0, 0, 0),
+                        help="Subtract these X, Y, Z values from acceleration in metres per second squared. The default is 0 0 0.")
+    parser.add_argument("--stand-when-idle", action="store_true",
+                        help="Stop stepping after a zero walking command. Move smoothly to the standing pose.")
+    parser.add_argument("--idle-linear-deadband", type=float, default=0.01,
+                        help="Treat forward and sideways speeds within this limit as zero, in metres per second. The default is 0.01.")
+    parser.add_argument("--idle-turn-deadband", type=float, default=0.05,
+                        help="Treat turn speeds within this limit as zero, in radians per second. The default is 0.05.")
+    parser.add_argument("--idle-delay", type=float, default=0.5,
+                        help="Wait this many seconds at zero speed before idle standing. The default is 0.5.")
+    parser.add_argument("--idle-ramp-time", type=float, default=0.5,
+                        help="Move to the standing pose over this many seconds. The default is 0.5.")
+    parser.add_argument("--idle-contact-wait", type=float, default=1.0,
+                        help="Wait at most this many seconds for both feet before using the smooth move alone. The default is 1.")
     parser.add_argument(
         "--commands",
         action="store_true",
@@ -665,6 +817,13 @@ if __name__ == "__main__":
         control_freq=args.control_freq,
         commands=args.commands,
         pitch_bias=args.pitch_bias,
+        accel_offset=args.accel_offset,
+        stand_when_idle=args.stand_when_idle,
+        idle_linear_deadband=args.idle_linear_deadband,
+        idle_turn_deadband=args.idle_turn_deadband,
+        idle_delay=args.idle_delay,
+        idle_ramp_time=args.idle_ramp_time,
+        idle_contact_wait=args.idle_contact_wait,
         save_obs=args.save_obs,
         replay_obs=args.replay_obs,
         cutoff_frequency=args.cutoff_frequency,

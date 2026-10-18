@@ -7,6 +7,8 @@ See [Step 3](#step-3-walking-commands) for commands and movement tests.
 The camera uses a 2000 mm range.
 Both images rotate 180 degrees before other image operations.
 
+A walking policy is a trained program that selects motor targets.
+
 UDP sends separate network messages without a delivery guarantee.
 A `hello` message asks the duck to send depth images.
 The latest valid `hello` selects the viewer address.
@@ -20,12 +22,14 @@ Use Python 3.9 or later for these modules.
 Use the existing Python 3.12 environment at `~/tof-venv` on the duck.
 It contains ArducamDepthCamera 0.1.24 and NumPy 1.26.4.
 The Arducam library is code that gives programs access to the camera.
+
 The Mac viewer uses NumPy 1.26.4 and OpenCV 4.10.0.84.
 OpenCV provides the image window and colours.
 
 The camera format defines the image size and how the camera stores each image point, called a pixel.
 The duck also needs `v4l2-ctl`, a tool that reads and sets camera formats.
 The existing camera setup already contains this tool.
+
 Keep both devices on the same Wi-Fi network.
 Allow incoming UDP traffic on port 5601 at the duck.
 The streamer accepts IPv4 and IPv6, the two common network address formats.
@@ -53,8 +57,10 @@ The source file (`.c`) contains the helper's code at `autonomy/compat/readonly_f
 A build turns this source code into a compiled file (`.so`) that the camera program can load.
 A processor is the chip that runs programs.
 The `.so` file works with only one type of processor.
+
 The Pi is the Raspberry Pi computer in the duck.
 We build the `.so` file on the Pi.
+
 Git stores only the `.c` file and ignores the `.so` file.
 GitHub stores the shared Git project.
 A pull gets saved changes from GitHub into the local project.
@@ -148,6 +154,7 @@ The project is [mofe64/Open_Duck_Mini_Runtime](https://github.com/mofe64/Open_Du
 A branch is a named line of changes in Git.
 Both the Mac and duck use branch `v2`.
 We no longer copy project files by hand.
+
 A commit records a set of file changes in Git.
 A push sends commits to GitHub.
 `origin` is the Git name for this project's GitHub address.
@@ -331,6 +338,7 @@ The walking environment uses Python 3.11.16 and its existing NumPy package.
 Step 3 needs no new packages.
 
 The Mac sender uses the existing `autonomy/.venv` environment.
+The IMU is a motion sensor that supplies gyro and accelerometer readings.
 A gyro measures rotation rate.
 An accelerometer measures acceleration, including gravity in these readings.
 
@@ -388,6 +396,180 @@ Manual speed limits keep their previous values.
 Autonomy requires the controller and fall detection.
 It rejects observation replay, which would bypass the selected speeds.
 Without `--autonomy`, the walking script imports and calls no autonomy code.
+
+### Acceleration offset
+
+The duck can creep while the walking command stays at zero.
+The reported upright x average is +1.3 metres per second squared.
+The sensor x reading may differ from the value used in training.
+This possible cause remains unconfirmed.
+
+An offset is a value that the program subtracts from a reading.
+`--accel-offset X Y Z` subtracts three values from the accelerometer readings, in metres per second squared.
+The default is `0 0 0`, which keeps the previous readings.
+The raw IMU reader applies the offset once, after it sets the sensor axes.
+The policy, fall checks, and state messages all use these corrected readings.
+The gyro readings stay unchanged.
+
+Fall detection records its upright reference with the same offset at startup.
+A fixed offset can change measured tilt angles away from upright.
+`--pitch_bias` still has no effect with the raw IMU.
+A nonzero `--pitch_bias` prints a warning.
+
+#### Floor test: acceleration offset
+
+These runs test the offset alone.
+Idle standing stays off, so the duck can still step at zero speed.
+The Mac sender shows state messages during manual control.
+All three runs use the same floor and centred sticks.
+
+1. Put the duck on a clear, level floor.
+2. Hold the controller.
+3. Open the Mac runtime folder in a Mac terminal.
+
+   ```sh
+   cd /Users/mofe/dev/openduck/Open_Duck_Mini_Runtime
+   ```
+
+4. Start the zero-command sender on the Mac.
+
+   ```sh
+   autonomy/.venv/bin/python -m autonomy.mac_send_command --forward 0
+   ```
+
+5. Open the scripts folder in a Pi terminal.
+
+   ```sh
+   cd ~/Open_Duck_Mini_Runtime/scripts
+   ```
+
+6. Start the first run on the Pi.
+
+   ```sh
+   ~/.venvs/openduck/bin/python -u v2_rl_walk_mujoco.py --onnx_model_path ~/BEST_WALK_ONNX_2.onnx --autonomy --freeze-head --accel-offset 0 0 0
+   ```
+
+7. Centre both sticks.
+8. Press A if walking starts paused.
+9. Check that the Mac shows zero applied speeds.
+10. Watch the duck for 10 seconds.
+11. Press A to pause walking.
+12. Record the offset and creep direction.
+13. Press Ctrl+C in the Pi walking terminal.
+14. Start the second run on the Pi.
+
+    ```sh
+    ~/.venvs/openduck/bin/python -u v2_rl_walk_mujoco.py --onnx_model_path ~/BEST_WALK_ONNX_2.onnx --autonomy --freeze-head --accel-offset 1.3 0 0
+    ```
+
+15. Repeat steps 7 to 13.
+16. Start the third run on the Pi.
+
+    ```sh
+    ~/.venvs/openduck/bin/python -u v2_rl_walk_mujoco.py --onnx_model_path ~/BEST_WALK_ONNX_2.onnx --autonomy --freeze-head --accel-offset -1.3 0 0
+    ```
+
+17. Repeat steps 7 to 13.
+18. Press Ctrl+C in the Mac sender terminal.
+
+| X offset | Test time | Creep direction |
+| --- | --- | --- |
+| `0` | 10 seconds | Not measured. |
+| `1.3` | 10 seconds | Not measured. |
+| `-1.3` | 10 seconds | Not measured. |
+
+### Stand when idle
+
+The gait phase is the clock that tells the policy which part of a step comes next.
+The walking loop normally advances this clock at zero speed, so the duck steps on the spot.
+`--stand-when-idle` stops policy calls after a near-zero walking command lasts 0.5 seconds.
+It then moves motor targets smoothly to `init_pos`, the standing pose, over 0.5 seconds.
+It keeps holding that pose until a walking command leaves the zero range.
+This flag defaults to off.
+
+A deadband is a small command range that the program treats as zero.
+Forward and sideways speeds use a deadband of 0.01 metres per second.
+Turn speed uses a deadband of 0.05 radians per second.
+These limits apply after the program selects manual or auto speeds.
+
+The program waits up to one extra second for both foot switches before it starts the move.
+It also stops move time if either switch loses contact during the move.
+After one second without both contacts, it uses the smooth move alone.
+The time limit prevents endless stepping when the switches cannot confirm contact.
+
+The action filter smooths motor targets during walking.
+A new walking command clears saved actions, motor targets, the gait clock, and the action filter.
+The program also resets the walking start time before it calls the policy again.
+It prints one `Idle:` line on entry and one `Walking:` line on exit.
+Fall checks, A pause, auto controls, and head holding also work during idle standing.
+Pause time does not count toward the idle wait or standing move.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--stand-when-idle` | Off | Stop stepping after a near-zero walking command. |
+| `--idle-linear-deadband` | `0.01` | Set the zero range for forward and sideways speed, in metres per second. |
+| `--idle-turn-deadband` | `0.05` | Set the zero range for turn speed, in radians per second. |
+| `--idle-delay` | `0.5` | Set the zero-command wait, in seconds. |
+| `--idle-ramp-time` | `0.5` | Set the standing move time, in seconds. |
+| `--idle-contact-wait` | `1.0` | Set the maximum wait for both foot switches, in seconds. |
+
+Idle standing cannot use saved policy inputs with `--replay_obs`.
+The program rejects invalid limits and times before it sets up hardware.
+
+#### Floor test: idle standing
+
+This test uses zero acceleration offsets to test idle standing alone.
+The contact waits can extend the time before the duck holds the standing pose.
+
+1. Put the duck on a clear, level floor.
+2. Hold the controller.
+3. Open the scripts folder on the Pi.
+
+   ```sh
+   cd ~/Open_Duck_Mini_Runtime/scripts
+   ```
+
+4. Start the walking program on the Pi.
+
+   ```sh
+   ~/.venvs/openduck/bin/python -u v2_rl_walk_mujoco.py --onnx_model_path ~/BEST_WALK_ONNX_2.onnx --autonomy --freeze-head --accel-offset 0 0 0 --stand-when-idle
+   ```
+
+5. Centre both sticks.
+6. Press A if walking starts paused.
+7. Wait four seconds.
+8. Check for one `Idle:` line.
+9. Check that the duck holds the standing pose without stepping.
+10. Move the left stick forward.
+11. Check for one `Walking:` line.
+12. Check that walking starts again.
+13. Centre both sticks.
+14. Check that the duck returns to the standing pose.
+15. Press A to pause walking.
+16. Check that the duck stays paused.
+17. Press A to return to manual mode.
+18. Check that the duck returns to the standing pose.
+19. Open the Mac runtime folder in a Mac terminal.
+
+    ```sh
+    cd /Users/mofe/dev/openduck/Open_Duck_Mini_Runtime
+    ```
+
+20. Start a ten-second command run on the Mac.
+
+    ```sh
+    autonomy/.venv/bin/python -m autonomy.mac_send_command --forward 0.05 --duration 10
+    ```
+
+21. Press RB to enter auto.
+22. Check that walking starts again.
+23. Check that auto ends when the Mac sender stops.
+24. Check that the duck returns to the standing pose.
+25. Press A to pause walking.
+26. Press Ctrl+C in the Pi walking terminal.
+
+The [stick, A, and RB test](#movement-test-2-stick-a-and-rb-exits) checks the other manual exits from auto.
+Real movement and creep direction remain untested until you run these floor tests.
 
 ### Mac sender flags
 
@@ -652,3 +834,14 @@ It also rejected 27 older movement messages after the newer stop messages.
 No test started the walking program or moved a motor.
 Head holding, button handling, fall handling, and sound duration passed mocked tests.
 Real movement, measured speed, audible feedback, and combined depth operation remain untested.
+
+### Optional walking flags checked on 18 October 2026
+
+All 120 hardware-free tests passed on the Mac.
+The tests used fake hardware for all walking checks.
+They checked offsets, fall detection, idle timing, standing targets, restart state, pause, and auto controls.
+Four additional runs matched the previous policy inputs, motor targets, and gait phase without the new flags.
+
+The Pi update and Pi tests remain for you.
+No check enabled real motor torque.
+Creep direction and the real standing move remain untested.

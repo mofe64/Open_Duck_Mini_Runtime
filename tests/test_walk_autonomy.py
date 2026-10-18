@@ -23,7 +23,7 @@ def buttons(a=False, rb=False):
 
 class WalkAutonomyTests(unittest.TestCase):
     def make_walk(self, autonomy=True, freeze_head=False, speaker=False,
-                  startup_error=None, startup_command=None):
+                  startup_error=None, startup_command=None, **walk_options):
         module = load_walk_module()
         config = SimpleNamespace(imu_upside_down=True, start_paused=False,
                                  phase_frequency_factor_offset=0.0, speaker=speaker,
@@ -58,7 +58,9 @@ class WalkAutonomyTests(unittest.TestCase):
             stack.enter_context(patch.object(module.RLWalk, "capture_upright_gravity",
                                             return_value=np.array([0, 0, -1]), side_effect=startup_error))
             stack.enter_context(patch.object(module.RLWalk, "configure_autonomy", configure))
-            walk = module.RLWalk("unused.onnx", commands=True, autonomy=autonomy, freeze_head=freeze_head)
+            walk = module.RLWalk("unused.onnx", commands=True, autonomy=autonomy,
+                                 freeze_head=freeze_head, **walk_options)
+            self.created_imu_arguments = module.Imu.call_args.kwargs
         return module, walk, controller, link
 
     def arm(self, walk, controller, manual=None):

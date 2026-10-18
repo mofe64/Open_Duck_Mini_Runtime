@@ -23,7 +23,11 @@ class Imu:
         calibrate=False,
         upside_down=True,
         i2c_bus=DEFAULT_IMU_I2C_BUS,
+        accel_offset=(0, 0, 0),
     ):
+        self.accel_offset = np.array(accel_offset, dtype=float, copy=True)
+        if self.accel_offset.shape != (3,) or not np.all(np.isfinite(self.accel_offset)):
+            raise ValueError("Acceleration offsets must contain three finite values.")
         self.sampling_freq = sampling_freq
         self.calibrate = calibrate
 
@@ -162,7 +166,13 @@ class Imu:
         except Exception:
             pass
 
-        return self.last_imu_data
+        if not np.any(self.accel_offset):
+            return self.last_imu_data
+        # Keep the stored reading unchanged so repeated reads subtract only once.
+        return {
+            **self.last_imu_data,
+            "accelero": np.asarray(self.last_imu_data["accelero"]) - self.accel_offset,
+        }
 
 
 if __name__ == "__main__":
